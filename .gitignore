@@ -17,6 +17,10 @@ config.ini
 _to_delete/
 *.zip
 
+# Firebase push secrets — NEVER commit the service-account private key
+*-firebase-adminsdk-*.json
+serviceAccountKey.json
+
 # Android
 android/.gradle/
 android/build/

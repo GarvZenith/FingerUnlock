@@ -1,6 +1,9 @@
 ; Copy this to  C:\FingerUnlock\service.ini
-; Phase 2a: shared-secret token (plaintext over LAN, test-only).
+; Phase 3: shared-secret token + the paired phone's Expo push token.
 
 port=5599
-; Use a long random string. The Android app will send this same token.
+; Long random secret; the phone sends this on /approve.
 token=change-this-to-a-long-random-secret
+; The phone's Expo push token (ExponentPushToken[...]). Filled automatically when
+; the phone pairs (POST /register), or paste it here manually.
+pushtoken=

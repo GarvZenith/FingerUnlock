@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "723382322526",
+    "project_id": "fingerunlock",
+    "storage_bucket": "fingerunlock.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:723382322526:android:671e80a28852d208b8fbcf",
+        "android_client_info": {
+          "package_name": "com.garv.fingerunlock"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCGO1hqEcMnJ2A8kZ46CcnPHY6dwJKU88E"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

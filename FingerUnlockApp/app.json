@@ -1,29 +1,35 @@
 {
   "expo": {
-    "name": "FingerUnlockApp",
-    "slug": "FingerUnlockApp",
+    "name": "FingerUnlock",
+    "slug": "fingerprint",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "dark",
     "newArchEnabled": true,
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+    "android": {
+      "package": "com.garv.fingerunlock",
+      "googleServicesFile": "./google-services.json",
+      "usesCleartextTraffic": true,
+      "permissions": [
+        "USE_BIOMETRIC",
+        "USE_FINGERPRINT",
+        "POST_NOTIFICATIONS",
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT"
+      ]
     },
     "ios": {
       "supportsTablet": true
     },
-    "android": {
-      "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
-      },
-      "edgeToEdgeEnabled": true
+    "plugins": [
+      "expo-local-authentication",
+      "expo-notifications"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "484d0eaa-5ea4-41f1-a361-0dbe33067fc4"
+      }
     },
-    "web": {
-      "favicon": "./assets/favicon.png"
-    }
+    "owner": "zenith28s-team"
   }
 }

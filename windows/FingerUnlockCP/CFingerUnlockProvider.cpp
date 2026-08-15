@@ -8,7 +8,16 @@
 // The external unlock signal. Anything that can create this file (our test
 // script now; the LocalSystem service driven by the phone later) triggers an
 // automatic unlock.
-#define FINGERUNLOCK_FLAG_PATH L"C:\\FingerUnlock\\unlock.flag"
+#define FINGERUNLOCK_FLAG_PATH   L"C:\\FingerUnlock\\unlock.flag"
+#define FINGERUNLOCK_LOCKED_PATH L"C:\\FingerUnlock\\locked.flag"
+#define FINGERUNLOCK_CLOSED_PATH L"C:\\FingerUnlock\\closed.flag"
+
+// Drop an (empty) signal file for the service to notice.
+static void WriteSignal(LPCWSTR path)
+{
+    HANDLE h = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+}
 
 CFingerUnlockProvider::CFingerUnlockProvider()
     : _cRef(1), _pCredential(NULL), _cpus(CPUS_INVALID),
