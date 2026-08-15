@@ -1,0 +1,6 @@
+; Copy this to  C:\FingerUnlock\service.ini
+; Phase 2a: shared-secret token (plaintext over LAN, test-only).
+
+port=5599
+; Use a long random string. The Android app will send this same token.
+token=change-this-to-a-long-random-secret
