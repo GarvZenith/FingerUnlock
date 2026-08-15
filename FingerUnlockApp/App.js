@@ -24,11 +24,16 @@ async function loadLaptops() {
 }
 async function saveLaptops(list) { await SecureStore.setItemAsync('fu_laptops', JSON.stringify(list)); }
 
-async function postTo(l, path, extra) {
-  return fetch(`http://${l.ip}:${PORT}/${path}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...extra, token: l.token }),
-  });
+async function postTo(l, path, extra, timeoutMs = 6000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(`http://${l.ip}:${PORT}/${path}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...extra, token: l.token }),
+      signal: ctrl.signal,
+    });
+  } finally { clearTimeout(t); }
 }
 
 export default function App() {
@@ -38,9 +43,17 @@ export default function App() {
   const [draft, setDraft] = useState(null);         // laptop being edited
   const [orig, setOrig] = useState(null);           // original (to detect changes)
   const [status, setStatus] = useState({});         // machine/online per laptop id
+  const [tick, setTick] = useState(0);              // drives periodic online re-poll
 
   const refresh = async () => setLaptops(await loadLaptops());
   useEffect(() => { refresh(); }, []);
+
+  // Re-check each PC every 3s so a card flips offline->online on its own the
+  // moment the PC is reachable again (e.g. after a reboot at the logon screen).
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 3000);
+    return () => clearInterval(id);
+  }, []);
 
   // ---- unlock handling ----
   async function handleUnlock(machine, nonce, action) {
@@ -144,7 +157,7 @@ export default function App() {
     (async () => {
       for (const l of laptops) {
         try {
-          const res = await postTo(l, 'info', {});
+          const res = await postTo(l, 'info', {}, 2500);
           if (!alive) return;
           if (res.ok) {
             const j = JSON.parse(await res.text());
@@ -154,7 +167,7 @@ export default function App() {
       }
     })();
     return () => { alive = false; };
-  }, [laptops, screen]);
+  }, [laptops, screen, tick]);
 
   // ---- edit flow ----
   const isDirty = () => draft && orig && JSON.stringify(draft) !== JSON.stringify(orig);

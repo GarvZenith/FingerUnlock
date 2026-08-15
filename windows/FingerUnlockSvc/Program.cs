@@ -118,11 +118,11 @@ static class Program
         lock (Gate) _pendingNonce = nonce;
         _ = Task.Run(() =>
         {
-            for (int i = 0; i < 6; i++)
+            for (int i = 0; i < 20; i++)   // ~40s window, retry every 2s while the network/Tailscale comes up
             {
                 lock (Gate) { if (_pendingNonce != nonce) return; }   // logged on / superseded
                 if (SendPush(true, nonce)) { Log("Cold-boot push delivered."); return; }
-                Thread.Sleep(5000);
+                Thread.Sleep(2000);
             }
             Log("Cold-boot push gave up (no network / no token).");
         });
