@@ -1,15 +1,14 @@
 using System.Net;
-using System.Net.Sockets;
 using System.Text;
 
-// FingerUnlock service (Phase 2a).
-// Listens on TCP. On a valid "UNLOCK <token>" request it writes the unlock flag,
-// which the credential provider is already watching for -> the machine unlocks.
+// FingerUnlock service (Phase 2b) — HTTP.
+// POST /unlock with header  X-Token: <token>  -> writes the unlock flag, which
+// the credential provider watches for, and the machine unlocks.
+// HTTP (not raw TCP) so the Expo Go app can talk to it with a plain fetch().
 //
-// SECURITY (Phase 2a is functional-only): the token travels in plaintext over
-// TCP. Fine for a LAN test; Phase 2b/3 add TLS + a per-unlock ECDH challenge
-// signed by the phone's fingerprint-gated key. Do NOT expose this port to the
-// internet yet.
+// SECURITY (still functional-only): token in a header over plain HTTP. Fine on a
+// trusted LAN for testing. Phase 3 adds HTTPS + a per-unlock ECDH challenge
+// signed by the phone's fingerprint-gated key. Don't expose this to the internet yet.
 
 class Program
 {
@@ -19,49 +18,57 @@ class Program
     static void Main()
     {
         var (port, token) = LoadConfig();
-        var listener = new TcpListener(IPAddress.Any, port);
-        listener.Start();
-        Log($"FingerUnlock service listening on 0.0.0.0:{port}. Waiting for unlock requests...");
 
+        var listener = new HttpListener();
+        listener.Prefixes.Add($"http://+:{port}/");   // all interfaces (needs admin OR a urlacl)
+        try
+        {
+            listener.Start();
+        }
+        catch (HttpListenerException ex)
+        {
+            Log($"Could not bind port {port}: {ex.Message}");
+            Log("Fix: run this terminal AS ADMINISTRATOR (or reserve the URL once with netsh).");
+            return;
+        }
+
+        Log($"FingerUnlock HTTP service on http://0.0.0.0:{port}/  (POST /unlock, header X-Token)");
         while (true)
         {
-            using var client = listener.AcceptTcpClient();
-            HandleClient(client, token);
+            var ctx = listener.GetContext();
+            HandleRequest(ctx, token);
         }
     }
 
-    static void HandleClient(TcpClient client, string token)
+    static void HandleRequest(HttpListenerContext ctx, string token)
     {
+        var req = ctx.Request;
+        var res = ctx.Response;
+        string remote = req.RemoteEndPoint?.Address.ToString() ?? "?";
+        string reply; int code;
+
         try
         {
-            var remote = ((IPEndPoint)client.Client.RemoteEndPoint!).Address;
-            using var stream = client.GetStream();
-
-            var buf = new byte[256];
-            int n = stream.Read(buf, 0, buf.Length);
-            string msg = Encoding.UTF8.GetString(buf, 0, n).Trim();
-
-            var parts = msg.Split(' ', 2);
-            string reply;
-            if (parts.Length == 2 && parts[0] == "UNLOCK" && parts[1] == token)
+            string sent = req.Headers["X-Token"] ?? "";
+            if (req.HttpMethod == "POST" && req.Url?.AbsolutePath == "/unlock" && sent == token)
             {
                 File.WriteAllText(FlagPath, "unlock");
-                reply = "OK\n";
+                reply = "OK"; code = 200;
                 Log($"ACCEPTED from {remote} -> unlock flag written.");
             }
             else
             {
-                reply = "DENIED\n";
-                Log($"DENIED from {remote} (bad token or bad request).");
+                reply = "DENIED"; code = 403;
+                Log($"DENIED from {remote} (path={req.Url?.AbsolutePath}, method={req.HttpMethod}).");
             }
+        }
+        catch (Exception ex) { reply = "ERROR"; code = 500; Log("Error: " + ex.Message); }
 
-            var rb = Encoding.UTF8.GetBytes(reply);
-            stream.Write(rb, 0, rb.Length);
-        }
-        catch (Exception ex)
-        {
-            Log("Error: " + ex.Message);
-        }
+        res.StatusCode = code;
+        var buf = Encoding.UTF8.GetBytes(reply);
+        res.ContentLength64 = buf.Length;
+        res.OutputStream.Write(buf, 0, buf.Length);
+        res.OutputStream.Close();
     }
 
     static (int port, string token) LoadConfig()
