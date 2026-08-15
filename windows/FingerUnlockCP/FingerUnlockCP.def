@@ -1,0 +1,4 @@
+LIBRARY FingerUnlockCP
+EXPORTS
+    DllGetClassObject   PRIVATE
+    DllCanUnloadNow     PRIVATE

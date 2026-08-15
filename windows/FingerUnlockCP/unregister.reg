@@ -1,0 +1,9 @@
+Windows Registry Editor Version 5.00
+
+; Removes the FingerUnlock Credential Provider. Run this (or restore a VM
+; snapshot) if the logon screen misbehaves. The default password tile is never
+; touched, so you can always still log in normally.
+
+[-HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\{2B5B8F1A-9C3D-4E7A-B12C-3D4E5F607182}]
+
+[-HKEY_CLASSES_ROOT\CLSID\{2B5B8F1A-9C3D-4E7A-B12C-3D4E5F607182}]

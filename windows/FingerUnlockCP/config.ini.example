@@ -1,0 +1,11 @@
+; Copy this to  C:\FingerUnlock\config.ini  and fill in your TEST account.
+; Phase 1 ONLY — plaintext, for a throwaway local account in the VM.
+; Phase 2 replaces this with an encrypted, fingerprint-gated vault.
+
+[credentials]
+; domain: use "." for a local account (the CP substitutes the PC name).
+domain=.
+; username: the local Windows account you will unlock.
+username=TestUser
+; password: that account's password.
+password=Test@12345

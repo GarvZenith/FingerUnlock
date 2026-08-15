@@ -1,0 +1,26 @@
+# Build output
+*.dll
+*.obj
+*.exp
+*.lib
+*.pdb
+*.ilk
+build/
+x64/
+Debug/
+Release/
+
+# Secrets / local config — never commit real credentials
+config.ini
+
+# Housekeeping
+_to_delete/
+*.zip
+
+# Android
+android/.gradle/
+android/build/
+android/local.properties
+
+# VS
+.vs/
