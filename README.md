@@ -1,52 +1,52 @@
 # FingerUnlock
 
 Unlock a Windows laptop from an Android phone using the phone's fingerprint —
-over LAN and (via Tailscale) the internet.
-
-The phone's fingerprint releases a hardware-backed key; the phone then proves
-itself to a service on the laptop, which signals a **custom Windows Credential
-Provider** to unlock the machine. No password is typed, and (from Phase 2) no
-usable password is stored at rest.
+"Google-prompt" style: lock the PC and your phone gets a **Yes/No** notification;
+tap Yes, scan your fingerprint, and the laptop unlocks. Over LAN today, and
+(via Tailscale) the internet next.
 
 ## How it works
 ```
-Android (fingerprint → Keystore key)
-        │  signed challenge over TLS (LAN / Tailscale)
+Windows locks  ─▶  C# service detects it (SessionSwitch)  ─▶  Expo push to phone
+                                                                     │
+   phone: "Unlock <PC>?  [Yes] [No]"  ◀───────────────────────────────┘
+        │  Yes → fingerprint → POST /approve (one-time nonce)
         ▼
-Windows Service (LocalSystem: network + crypto + credential vault)
-        │  named-pipe / flag signal
-        ▼
-Credential Provider DLL (on the lock screen) → UNLOCK
+   service writes unlock.flag  ─▶  Credential Provider (lock screen)  ─▶  UNLOCK
 ```
 
 ## Repo layout
 ```
-├─ FingerUnlock_Design.md          # full architecture + roadmap
-├─ docs/Phase1_Build_and_Test.md   # ← build & test the credential provider
-├─ windows/FingerUnlockCP/         # C++ COM credential provider (Phase 1 / 1b)
-├─ windows/FingerUnlockSvc/        # C# HTTP service (Phase 2) ✅
-├─ app/                            # Expo / React Native app, App.js (Phase 2) ✅
-└─ shared/                         # protocol + crypto notes          [TODO]
+├─ FingerUnlock_Design.md          # architecture + roadmap
+├─ docs/                           # build & test guides (Phase 1, Phase 3)
+├─ windows/FingerUnlockCP/         # C++ COM credential provider (unlocks Windows)
+├─ windows/FingerUnlockSvc/        # C# service: lock-detect + push + approve/deny
+├─ FingerUnlockApp/                # Expo / React Native app (push + fingerprint)
+└─ shared/                         # protocol + crypto notes            [TODO]
 ```
 
 ## Status
-- ✅ **Phase 1** — credential provider unlocks Windows (manual tile click).
+- ✅ **Phase 1** — credential provider unlocks Windows (manual tile).
 - ✅ **Phase 1b** — auto-unlock when the `unlock.flag` signal appears.
-- ✅ **Phase 2** — C# HTTP service + Expo app; **phone fingerprint unlocks the laptop over LAN.**
-- ⬜ **Phase 3** — security hardening: HTTPS + ECDH pairing, no password stored at rest.
+- ✅ **Phase 2** — C# HTTP service + Expo app; phone fingerprint unlocks over LAN.
+- ✅ **Phase 3** — **push approval**: lock the PC → phone Yes/No push → fingerprint → unlock (LAN).
+- ⬜ **Phase 3b** — headless app (no launcher icon) + sticky notification + self-hosted auto-updater.
 - ⬜ **Phase 4** — Tailscale internet range (unlock from anywhere).
+- ⬜ **Hardening** — HTTPS + ECDH pairing, no password stored at rest.
 
 ## Build & test
-See **`docs/Phase1_Build_and_Test.md`**. Build with the VS 2022 *x64 Native Tools*
-prompt (`build.bat`), deploy to `C:\FingerUnlock\`, register with `register.reg`.
+- Credential provider + service: see `docs/Phase1_Build_and_Test.md`.
+- Push app (FCM + EAS build): see `docs/Phase3_Push_Setup.md`.
+Develop and test in a VM with snapshots — a broken credential provider can lock the logon screen.
+
+## Tech
+C++/COM credential provider · C# (.NET 8) service · Expo / React Native app
+(expo-notifications + expo-local-authentication) · Expo push / FCM.
 
 ## ⚠️ Security
-This project can unlock a Windows machine, so treat it carefully:
-- **Develop/test only in a VM with snapshots.** A broken credential provider can
-  make the logon screen unusable.
-- Never commit real credentials — `config.ini` is gitignored.
-- Phase 1's plaintext `config.ini` is **test-only**; Phase 2 replaces it with an
-  encrypted, fingerprint-gated (ECDH) vault.
+- VM-only development with snapshots.
+- `config.ini` (Windows password) and the Firebase service-account key are gitignored — never commit them.
+- Phase 3 uses a plaintext shared-secret token over LAN HTTP; HTTPS + ECDH is the hardening step.
 
 ## License
 MIT — see [LICENSE](LICENSE).
