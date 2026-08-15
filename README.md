@@ -24,16 +24,17 @@ Credential Provider DLL (on the lock screen) → UNLOCK
 ├─ FingerUnlock_Design.md          # full architecture + roadmap
 ├─ docs/Phase1_Build_and_Test.md   # ← build & test the credential provider
 ├─ windows/FingerUnlockCP/         # C++ COM credential provider (Phase 1 / 1b)
-├─ windows/FingerUnlockSvc/        # C# service (Phase 2)            [TODO]
-├─ android/                        # Kotlin app, BiometricPrompt (Phase 2+) [TODO]
+├─ windows/FingerUnlockSvc/        # C# HTTP service (Phase 2) ✅
+├─ app/                            # Expo / React Native app, App.js (Phase 2) ✅
 └─ shared/                         # protocol + crypto notes          [TODO]
 ```
 
 ## Status
-- ✅ **Phase 1** — credential provider unlocks Windows on a manual tile click.
-- 🚧 **Phase 1b** — auto-unlock when an external signal (`unlock.flag`) appears.
-- ⬜ **Phase 2** — C# service + Android app, pairing + challenge/response, ECDH-gated vault.
-- ⬜ **Phase 3** — fingerprint gate. **Phase 4** — Tailscale internet range.
+- ✅ **Phase 1** — credential provider unlocks Windows (manual tile click).
+- ✅ **Phase 1b** — auto-unlock when the `unlock.flag` signal appears.
+- ✅ **Phase 2** — C# HTTP service + Expo app; **phone fingerprint unlocks the laptop over LAN.**
+- ⬜ **Phase 3** — security hardening: HTTPS + ECDH pairing, no password stored at rest.
+- ⬜ **Phase 4** — Tailscale internet range (unlock from anywhere).
 
 ## Build & test
 See **`docs/Phase1_Build_and_Test.md`**. Build with the VS 2022 *x64 Native Tools*
