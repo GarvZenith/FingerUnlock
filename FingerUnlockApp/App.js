@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Platform, Linking,
+  Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Platform, Linking,
 } from 'react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as Notifications from 'expo-notifications';
@@ -9,6 +9,7 @@ import * as SecureStore from 'expo-secure-store';
 import Constants from 'expo-constants';
 
 const TAILSCALE_PLAY = 'https://play.google.com/store/apps/details?id=com.tailscale.ipn';
+const PORT = '5599';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -21,13 +22,10 @@ export default function App() {
   const [token, setToken] = useState('');
   const [pushToken, setPushToken] = useState('');
   const [log, setLog] = useState('starting…');
-  const PORT = '5599';
 
-  const cfg = useRef({ ip, token });
-  useEffect(() => { cfg.current = { ip, token }; }, [ip, token]);
   const line = (s) => setLog((p) => (`• ${s}\n` + p).split('\n').slice(0, 12).join('\n'));
 
-  // ---- Persist IP + token (enter once, remembered forever) ----
+  // ---- Persist IP + token ----
   const loaded = useRef(false);
   useEffect(() => {
     (async () => {
@@ -42,11 +40,17 @@ export default function App() {
   useEffect(() => { if (loaded.current) SecureStore.setItemAsync('fu_ip', ip).catch(() => {}); }, [ip]);
   useEffect(() => { if (loaded.current && token) SecureStore.setItemAsync('fu_token', token).catch(() => {}); }, [token]);
 
-  async function post(path, bodyObj) {
-    const { ip, token } = cfg.current;
+  // Always read creds from storage (state may not be ready on a cold start).
+  async function getCreds() {
+    const i = (await SecureStore.getItemAsync('fu_ip')) || ip;
+    const t = (await SecureStore.getItemAsync('fu_token')) || token;
+    return { ip: i, token: t };
+  }
+  async function post(path, extra) {
+    const { ip, token } = await getCreds();
     return fetch(`http://${ip}:${PORT}/${path}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...bodyObj, token }),
+      body: JSON.stringify({ ...extra, token }),
     });
   }
 
@@ -65,19 +69,16 @@ export default function App() {
     line('denied');
   }
 
-  // ---- Auto-update (EAS Update) — loop-safe ----
+  // ---- Auto-update (EAS Update), loop-safe ----
   const updating = useRef(false);
   async function runUpdate() {
     if (updating.current) return;
     updating.current = true;
     try {
       await Notifications.dismissAllNotificationsAsync();
-      await Notifications.scheduleNotificationAsync({
-        content: { title: 'FingerUnlock', body: 'Installing update…', sticky: true }, trigger: null,
-      });
       const f = await Updates.fetchUpdateAsync();
       if (f.isNew) { await Updates.reloadAsync(); }
-      else { line('already up to date'); await Notifications.dismissAllNotificationsAsync(); updating.current = false; }
+      else { line('already up to date'); updating.current = false; }
     } catch (e) { line('update err: ' + e.message); updating.current = false; }
   }
   async function checkForUpdate(manual) {
@@ -92,6 +93,21 @@ export default function App() {
         });
       } else if (manual) line('no update');
     } catch (e) { if (manual) line('update check err: ' + e.message); }
+  }
+
+  // Handle a notification response ONCE (works warm AND on cold start).
+  async function handleResponse(resp) {
+    if (!resp) return;
+    const id = resp.notification.request.identifier;
+    const last = await SecureStore.getItemAsync('fu_lastNotif');
+    if (last === id) return;                 // already handled this notification
+    await SecureStore.setItemAsync('fu_lastNotif', id);
+
+    const d = resp.notification.request.content.data || {};
+    if (d.type === 'update') { runUpdate(); return; }
+    if (d.type !== 'unlock') return;
+    if (resp.actionIdentifier === 'no') deny(d.nonce);
+    else approve(d.nonce);                    // "Yes" button OR tapping the notification
   }
 
   useEffect(() => {
@@ -115,20 +131,18 @@ export default function App() {
         setPushToken(t);
         line('push token ready');
       } catch (e) { line('push token err: ' + e.message); }
+
+      // If a tap COLD-STARTED the app, handle it now.
+      const coldResp = await Notifications.getLastNotificationResponseAsync();
+      handleResponse(coldResp);
+
       checkForUpdate(false);
     })();
 
     const recv = Notifications.addNotificationReceivedListener((n) => {
       if ((n.request.content.data || {}).type === 'cancel') Notifications.dismissAllNotificationsAsync();
     });
-    const resp = Notifications.addNotificationResponseReceivedListener((r) => {
-      const d = r.notification.request.content.data || {};
-      const a = r.actionIdentifier;
-      if (d.type === 'update') { runUpdate(); return; }
-      if (d.type !== 'unlock') return;
-      if (a === 'no') deny(d.nonce);
-      else approve(d.nonce);
-    });
+    const resp = Notifications.addNotificationResponseReceivedListener(handleResponse);
     return () => { recv.remove(); resp.remove(); };
   }, []);
 
