@@ -4,9 +4,9 @@ import {
 } from 'react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as Notifications from 'expo-notifications';
+import * as Updates from 'expo-updates';
 import Constants from 'expo-constants';
 
-// Show the notification even when the app is foregrounded.
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowBanner: true, shouldShowList: true, shouldPlaySound: true, shouldSetBadge: false,
@@ -20,17 +20,14 @@ export default function App() {
   const [log, setLog] = useState('starting…');
   const PORT = '5599';
 
-  // keep latest ip/token available inside notification callbacks
   const cfg = useRef({ ip, token });
   useEffect(() => { cfg.current = { ip, token }; }, [ip, token]);
-
-  const line = (s) => setLog((p) => (`• ${s}\n` + p).split('\n').slice(0, 10).join('\n'));
+  const line = (s) => setLog((p) => (`• ${s}\n` + p).split('\n').slice(0, 12).join('\n'));
 
   async function post(path, bodyObj) {
     const { ip, token } = cfg.current;
     return fetch(`http://${ip}:${PORT}/${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...bodyObj, token }),
     });
   }
@@ -50,29 +47,62 @@ export default function App() {
     line('denied');
   }
 
+  // ---- Auto-update (EAS Update) — loop-safe ----
+  const updating = useRef(false);
+  async function runUpdate() {
+    if (updating.current) return;
+    updating.current = true;
+    try {
+      await Notifications.dismissAllNotificationsAsync();
+      await Notifications.scheduleNotificationAsync({
+        content: { title: 'FingerUnlock', body: 'Installing update…', sticky: true }, trigger: null,
+      });
+      const f = await Updates.fetchUpdateAsync();
+      if (f.isNew) {
+        await Updates.reloadAsync();          // restarts on the new version (clears the notification)
+      } else {
+        line('already up to date');
+        await Notifications.dismissAllNotificationsAsync();
+        updating.current = false;
+      }
+    } catch (e) { line('update err: ' + e.message); updating.current = false; }
+  }
+  async function checkForUpdate(manual) {
+    try {
+      if (!Updates.isEnabled) { if (manual) line('updates not enabled (dev build)'); return; }
+      const r = await Updates.checkForUpdateAsync();
+      if (r.isAvailable) {
+        line('update available');
+        await Notifications.scheduleNotificationAsync({
+          content: { title: 'FingerUnlock update available', body: 'Tap “Update now” to install',
+                     categoryId: 'update', data: { type: 'update' } }, trigger: null,
+        });
+      } else if (manual) line('no update');
+    } catch (e) { if (manual) line('update check err: ' + e.message); }
+  }
+
   useEffect(() => {
     (async () => {
-      const { status } = await Notifications.requestPermissionsAsync();
-      if (status !== 'granted') line('⚠ notifications not granted');
-
+      await Notifications.requestPermissionsAsync();
       await Notifications.setNotificationCategoryAsync('unlock', [
         { identifier: 'yes', buttonTitle: 'Yes, unlock', options: { opensAppToForeground: true } },
         { identifier: 'no',  buttonTitle: 'No',          options: { opensAppToForeground: false, isDestructive: true } },
       ]);
+      await Notifications.setNotificationCategoryAsync('update', [
+        { identifier: 'update', buttonTitle: 'Update now', options: { opensAppToForeground: true } },
+      ]);
       if (Platform.OS === 'android') {
         await Notifications.setNotificationChannelAsync('unlock', {
-          name: 'Unlock requests',
-          importance: Notifications.AndroidImportance.MAX,
-          sound: 'default',
+          name: 'Unlock requests', importance: Notifications.AndroidImportance.MAX, sound: 'default',
         });
       }
       try {
-        const projectId =
-          Constants?.expoConfig?.extra?.eas?.projectId ?? Constants?.easConfig?.projectId;
+        const projectId = Constants?.expoConfig?.extra?.eas?.projectId ?? Constants?.easConfig?.projectId;
         const t = (await Notifications.getExpoPushTokenAsync(projectId ? { projectId } : undefined)).data;
         setPushToken(t);
         line('push token ready');
       } catch (e) { line('push token err: ' + e.message); }
+      checkForUpdate(false);   // loop-safe: one check per launch
     })();
 
     const recv = Notifications.addNotificationReceivedListener((n) => {
@@ -80,8 +110,10 @@ export default function App() {
     });
     const resp = Notifications.addNotificationResponseReceivedListener((r) => {
       const d = r.notification.request.content.data || {};
+      const a = r.actionIdentifier;
+      if (d.type === 'update') { runUpdate(); return; }
       if (d.type !== 'unlock') return;
-      if (r.actionIdentifier === 'no') deny(d.nonce);
+      if (a === 'no') deny(d.nonce);
       else approve(d.nonce);           // 'yes' button or tapping the notification
     });
     return () => { recv.remove(); resp.remove(); };
@@ -108,6 +140,10 @@ export default function App() {
         <Text style={styles.btnText}>Pair this phone</Text>
       </TouchableOpacity>
 
+      <TouchableOpacity style={styles.btnAlt} onPress={() => checkForUpdate(true)}>
+        <Text style={styles.btnAltText}>Check for update</Text>
+      </TouchableOpacity>
+
       <Text style={styles.label}>Phone push token</Text>
       <Text selectable style={styles.mono}>{pushToken || '…'}</Text>
 
@@ -124,5 +160,7 @@ const styles = StyleSheet.create({
   input: { backgroundColor: '#1b2030', color: '#fff', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12, fontSize: 16 },
   btn: { backgroundColor: '#3b6ef5', borderRadius: 12, paddingVertical: 14, alignItems: 'center', marginTop: 18 },
   btnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  btnAlt: { borderColor: '#3b6ef5', borderWidth: 1, borderRadius: 12, paddingVertical: 12, alignItems: 'center', marginTop: 10 },
+  btnAltText: { color: '#9ab6ff', fontSize: 14, fontWeight: '600' },
   mono: { color: '#9fd', fontSize: 12, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', marginTop: 4 },
 });
