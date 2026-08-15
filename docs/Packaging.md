@@ -20,8 +20,9 @@ Zip `dist\` and attach it to a **GitHub Release** (binaries aren't committed to 
 1. Download + unzip the release.
 2. Right-click **`install.ps1`** → **Run with PowerShell** (as **Administrator**).
    It copies files to `C:\FingerUnlock`, registers the credential provider, opens
-   the firewall, generates a **token**, and sets the service to **auto-start at logon**
-   (hidden). It prints the token + IP and opens the Tailscale download page.
+   the firewall, generates a **token**, and installs the push service as a
+   **boot-time LocalSystem Windows service**. It prints the token + IP and opens
+   the Tailscale download page.
 3. Install **Tailscale** on the PC + phone (for internet unlock).
 4. In the phone app → **Add laptop** → enter the IP + token → **Detect** → **Pair**.
 5. Lock with **Win+L** to test.
@@ -30,9 +31,11 @@ Zip `dist\` and attach it to a **GitHub Release** (binaries aren't committed to 
 Run **`uninstall.ps1`** as admin, then reboot.
 
 ## Notes
-- The service auto-starts in the user session (needed for lock detection) with
-  elevated rights (needed to bind the HTTP port).
-- Cold-boot (before any login) unlock is out of scope here — this covers lock/unlock
-  after login, which is the common case.
-- No password is entered by the installer; the credential provider uses the account
-  you're already signed into on the lock screen.
+- The service runs as a **boot-time LocalSystem service** (session 0), so it's up at
+  the logon screen. Lock/logon/logoff are detected via **WTS session notifications**
+  (`OnSessionChange`) — the only mechanism that works in session 0.
+- **Cold-boot is supported**: after a restart, reboot → phone → fingerprint → the
+  credential provider logs you in (`CPUS_LOGON`) using the account in `config.ini`.
+- The installer writes only `service.ini` (port/token). `config.ini`
+  (username + password, used by the credential provider) is created by you and is
+  gitignored. Removing that at-rest password is the ECDH hardening step.

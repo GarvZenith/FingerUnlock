@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  Text, View, TextInput, TouchableOpacity, StyleSheet, ScrollView, Platform, Linking, Alert, BackHandler,
+  Text, View, TextInput, TouchableOpacity, StyleSheet, ScrollView, Platform, Linking, Alert, BackHandler, ToastAndroid,
 } from 'react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as Notifications from 'expo-notifications';
@@ -61,12 +61,20 @@ export default function App() {
 
   // Tap a laptop card -> fingerprint -> unlock on demand (uses the token-only /unlock).
   async function unlockNow(l) {
+    // If the PC isn't locked, don't send an unlock — just a small toast.
+    try {
+      const info = await postTo(l, 'info', {});
+      if (info.ok) {
+        const j = JSON.parse(await info.text());
+        if (j.locked === false) { ToastAndroid.show('PC is already unlocked', ToastAndroid.SHORT); return; }
+      }
+    } catch {}
     const r = await LocalAuthentication.authenticateAsync({ promptMessage: `Unlock ${l.name || l.machine || 'laptop'}` });
     if (!r.success) return;
     try {
       const res = await postTo(l, 'unlock', {});
-      Alert.alert('FingerUnlock', res.ok ? `✅ Unlock sent to ${l.name || l.machine || l.ip}` : `Failed (${res.status})`);
-    } catch (e) { Alert.alert('FingerUnlock', e.message); }
+      ToastAndroid.show(res.ok ? `Unlock sent to ${l.name || l.machine || l.ip}` : `Failed (${res.status})`, ToastAndroid.SHORT);
+    } catch (e) { ToastAndroid.show('Failed: ' + e.message, ToastAndroid.SHORT); }
   }
 
   // ---- auto-update ----

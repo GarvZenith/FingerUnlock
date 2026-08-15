@@ -31,9 +31,10 @@ Windows locks  ─▶  C# service detects it (SessionSwitch)  ─▶  Expo push 
 - ✅ **Phase 2** — C# HTTP service + Expo app; phone fingerprint unlocks over LAN.
 - ✅ **Phase 3** — **push approval**: lock the PC → phone Yes/No push → fingerprint → unlock.
 - ✅ **Phase 4** — **Tailscale internet range**: unlock from anywhere (mobile data / any network). ✔ tested
-- 🚧 **Phase 3b** — **multi-laptop manager** (one phone, many PCs) · **Settings** screen with pencil-edit + save/discard · **auto-detected PC name** (`/info`) · auto-updater (EAS Update, loop-safe) · encrypted saved config · Install-Tailscale button. Pending: true sticky notification + headless + full-screen call-style prompt (all need native prebuild).
-- ⬜ **Hardening** — HTTPS + ECDH pairing, no password stored at rest; deploy to the real laptop safely.
-- 🚧 **Packaging** — one-click **`install.ps1`** (registers CP, auto-starts the service at logon, generates a token, opens firewall + Tailscale) + **self-contained service EXE** (`publish.bat`). Phone = prebuilt APK. See `docs/Packaging.md`.
+- 🚧 **Phase 3b** — **multi-laptop manager** (one phone, many PCs) · **Settings** screen with pencil-edit + save/discard · **auto-detected PC name** (`/info`) · **tap a PC card → fingerprint → unlock** (toast feedback; skips + says "already unlocked" if the PC isn't locked, via `/info` `locked` state) · auto-updater (EAS Update, loop-safe) · encrypted saved config · Install-Tailscale button. Pending: true sticky notification + headless + full-screen call-style prompt (all need native prebuild).
+- 🚧 **Cold-boot unlock** — the push service now runs as a **boot-time LocalSystem Windows service** with **WTS session detection** (`OnSessionChange`), so it's alive at the logon screen right after a **restart**: reboot → phone push / card-tap → fingerprint → the credential provider **logs you in** (`CPUS_LOGON`, no manual password). Console/dev mode still uses `SessionSwitch` unchanged. *(Stage 1 — in VM testing.)*
+- ⬜ **Hardening** — HTTPS + ECDH pairing, no account password stored at rest (Stage 2 of cold-boot); deploy to the real laptop safely.
+- 🚧 **Packaging** — one-click **`install.ps1`** (registers CP, installs the boot-SYSTEM service, generates a token, opens firewall + Tailscale) + **self-contained service EXE** (`publish.bat`). Phone = prebuilt APK. See `docs/Packaging.md`.
 
 ## Build & test
 - Credential provider + service: see `docs/Phase1_Build_and_Test.md`.

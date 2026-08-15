@@ -2,15 +2,17 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net8.0-windows</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>FingerUnlockSvc</AssemblyName>
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- SessionSwitch (lock/unlock) events -->
+    <!-- SessionSwitch (console/dev lock detection) -->
     <PackageReference Include="Microsoft.Win32.SystemEvents" Version="8.0.0" />
+    <!-- ServiceBase + WTS session-change events (boot-SYSTEM service, cold boot) -->
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.0" />
   </ItemGroup>
 
 </Project>

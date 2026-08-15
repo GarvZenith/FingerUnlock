@@ -1,20 +1,30 @@
 # FingerUnlock installer — RUN AS ADMINISTRATOR.
-# Copies binaries, registers the credential provider, auto-starts the service at
-# logon (hidden, elevated), generates a token, opens firewall + Tailscale page.
+# Copies binaries, registers the credential provider, installs the push service as
+# a boot-time LocalSystem Windows service (so it's alive at the cold-boot logon
+# screen), generates a token, opens firewall + Tailscale page.
 #Requires -RunAsAdministrator
 $ErrorActionPreference = 'Stop'
 
 $src   = $PSScriptRoot
 $dst   = 'C:\FingerUnlock'
 $clsid = '{2B5B8F1A-9C3D-4E7A-B12C-3D4E5F607182}'
+$svc   = 'FingerUnlockSvc'
 
 Write-Host "Installing FingerUnlock to $dst ..."
 New-Item -ItemType Directory -Force -Path $dst | Out-Null
 
+# 0) Stop anything from a previous install so we can overwrite the exe
+if (Get-Service -Name $svc -ErrorAction SilentlyContinue) {
+  Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
+  sc.exe delete $svc | Out-Null
+  Start-Sleep -Seconds 1
+}
+Unregister-ScheduledTask -TaskName 'FingerUnlock' -Confirm:$false -ErrorAction SilentlyContinue   # legacy per-user task
+Get-Process FingerUnlockSvc -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
 # 1) Binaries
 Copy-Item "$src\FingerUnlockCP.dll"  "$dst\" -Force
 Copy-Item "$src\FingerUnlockSvc.exe" "$dst\" -Force
-Copy-Item "$src\run-hidden.vbs"      "$dst\" -Force
 
 # 2) Register the credential provider (machine-wide)
 $clsPath  = "HKLM:\SOFTWARE\Classes\CLSID\$clsid"
@@ -40,13 +50,11 @@ $token = ((Get-Content $ini | Where-Object { $_ -like 'token=*' }) -replace '^to
 netsh advfirewall firewall delete rule name="FingerUnlock" 2>$null | Out-Null
 netsh advfirewall firewall add rule name="FingerUnlock" dir=in action=allow protocol=TCP localport=5599 | Out-Null
 
-# 5) Auto-start at logon (hidden window, highest privileges, in the user session)
-$action    = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "`"$dst\run-hidden.vbs`""
-$trigger   = New-ScheduledTaskTrigger -AtLogOn
-$principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -RunLevel Highest -LogonType Interactive
-$settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)
-Register-ScheduledTask -TaskName 'FingerUnlock' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
-Start-ScheduledTask -TaskName 'FingerUnlock'
+# 5) Boot-SYSTEM Windows service (runs in session 0, before anyone logs in ->
+#    cold-boot unlock; lock/logon/logoff detected via WTS session notifications)
+New-Service -Name $svc -BinaryPathName "`"$dst\FingerUnlockSvc.exe`" --service" `
+            -DisplayName 'FingerUnlock' -StartupType Automatic | Out-Null
+Start-Service -Name $svc
 
 # 6) Pairing info + Tailscale
 Write-Host ""
@@ -58,4 +66,5 @@ Write-Host "  IP    : (this PC)"
 Write-Host ""
 Write-Host "For unlock over the internet: install Tailscale on this PC AND your phone."
 Start-Process 'https://tailscale.com/download/windows'
-Write-Host "Lock with Win+L to test. To remove: run uninstall.ps1 as admin."
+Write-Host "Test: lock with Win+L, and (for cold boot) reboot and unlock from the phone."
+Write-Host "To remove: run uninstall.ps1 as admin."
