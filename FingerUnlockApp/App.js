@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Platform,
+  View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Platform, Linking,
 } from 'react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as Notifications from 'expo-notifications';
 import * as Updates from 'expo-updates';
+import * as SecureStore from 'expo-secure-store';
 import Constants from 'expo-constants';
+
+const TAILSCALE_PLAY = 'https://play.google.com/store/apps/details?id=com.tailscale.ipn';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -23,6 +26,21 @@ export default function App() {
   const cfg = useRef({ ip, token });
   useEffect(() => { cfg.current = { ip, token }; }, [ip, token]);
   const line = (s) => setLog((p) => (`• ${s}\n` + p).split('\n').slice(0, 12).join('\n'));
+
+  // ---- Persist IP + token (enter once, remembered forever) ----
+  const loaded = useRef(false);
+  useEffect(() => {
+    (async () => {
+      const [i, t] = await Promise.all([
+        SecureStore.getItemAsync('fu_ip'), SecureStore.getItemAsync('fu_token'),
+      ]);
+      if (i) setIp(i);
+      if (t) setToken(t);
+      loaded.current = true;
+    })();
+  }, []);
+  useEffect(() => { if (loaded.current) SecureStore.setItemAsync('fu_ip', ip).catch(() => {}); }, [ip]);
+  useEffect(() => { if (loaded.current && token) SecureStore.setItemAsync('fu_token', token).catch(() => {}); }, [token]);
 
   async function post(path, bodyObj) {
     const { ip, token } = cfg.current;
@@ -58,13 +76,8 @@ export default function App() {
         content: { title: 'FingerUnlock', body: 'Installing update…', sticky: true }, trigger: null,
       });
       const f = await Updates.fetchUpdateAsync();
-      if (f.isNew) {
-        await Updates.reloadAsync();          // restarts on the new version (clears the notification)
-      } else {
-        line('already up to date');
-        await Notifications.dismissAllNotificationsAsync();
-        updating.current = false;
-      }
+      if (f.isNew) { await Updates.reloadAsync(); }
+      else { line('already up to date'); await Notifications.dismissAllNotificationsAsync(); updating.current = false; }
     } catch (e) { line('update err: ' + e.message); updating.current = false; }
   }
   async function checkForUpdate(manual) {
@@ -102,7 +115,7 @@ export default function App() {
         setPushToken(t);
         line('push token ready');
       } catch (e) { line('push token err: ' + e.message); }
-      checkForUpdate(false);   // loop-safe: one check per launch
+      checkForUpdate(false);
     })();
 
     const recv = Notifications.addNotificationReceivedListener((n) => {
@@ -114,7 +127,7 @@ export default function App() {
       if (d.type === 'update') { runUpdate(); return; }
       if (d.type !== 'unlock') return;
       if (a === 'no') deny(d.nonce);
-      else approve(d.nonce);           // 'yes' button or tapping the notification
+      else approve(d.nonce);
     });
     return () => { recv.remove(); resp.remove(); };
   }, []);
@@ -128,16 +141,20 @@ export default function App() {
     <ScrollView contentContainerStyle={styles.c}>
       <Text style={styles.title}>🔓 FingerUnlock</Text>
 
-      <Text style={styles.label}>Laptop IP</Text>
+      <Text style={styles.label}>Laptop IP (saved automatically)</Text>
       <TextInput style={styles.input} value={ip} onChangeText={setIp}
         autoCapitalize="none" keyboardType="numbers-and-punctuation" />
 
-      <Text style={styles.label}>Token</Text>
+      <Text style={styles.label}>Token (saved securely)</Text>
       <TextInput style={styles.input} value={token} onChangeText={setToken}
         autoCapitalize="none" secureTextEntry />
 
       <TouchableOpacity style={styles.btn} onPress={pair}>
         <Text style={styles.btnText}>Pair this phone</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity style={styles.btnAlt} onPress={() => Linking.openURL(TAILSCALE_PLAY)}>
+        <Text style={styles.btnAltText}>Install Tailscale (for unlock over internet)</Text>
       </TouchableOpacity>
 
       <TouchableOpacity style={styles.btnAlt} onPress={() => checkForUpdate(true)}>

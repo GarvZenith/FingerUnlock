@@ -31,7 +31,7 @@ Windows locks  ─▶  C# service detects it (SessionSwitch)  ─▶  Expo push 
 - ✅ **Phase 2** — C# HTTP service + Expo app; phone fingerprint unlocks over LAN.
 - ✅ **Phase 3** — **push approval**: lock the PC → phone Yes/No push → fingerprint → unlock.
 - ✅ **Phase 4** — **Tailscale internet range**: unlock from anywhere (mobile data / any network). ✔ tested
-- 🚧 **Phase 3b** — **EAS Update auto-updater** (push OTA updates, loop-safe) + best-effort sticky notification. Headless (no launcher icon) deferred until QR pairing removes the need to open the app.
+- 🚧 **Phase 3b** — **auto-updater** (EAS Update, loop-safe) · **saved IP/token** (enter once, stored encrypted) · in-app **Install Tailscale** button. Pending: true sticky notification + headless (need native code / QR pairing).
 - ⬜ **Hardening** — HTTPS + ECDH pairing, no password stored at rest; deploy to the real laptop safely.
 - ⬜ **Packaging** — one-click Windows installer + prebuilt APK + QR pairing (turnkey for other users).
 
