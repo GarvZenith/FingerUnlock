@@ -2,8 +2,8 @@
 
 Unlock a Windows laptop from an Android phone using the phone's fingerprint —
 "Google-prompt" style: lock the PC and your phone gets a **Yes/No** notification;
-tap Yes, scan your fingerprint, and the laptop unlocks. Over LAN today, and
-(via Tailscale) the internet next.
+tap Yes, scan your fingerprint, and the laptop unlocks — over LAN or, via
+Tailscale, from anywhere on the internet.
 
 ## How it works
 ```
@@ -29,10 +29,11 @@ Windows locks  ─▶  C# service detects it (SessionSwitch)  ─▶  Expo push 
 - ✅ **Phase 1** — credential provider unlocks Windows (manual tile).
 - ✅ **Phase 1b** — auto-unlock when the `unlock.flag` signal appears.
 - ✅ **Phase 2** — C# HTTP service + Expo app; phone fingerprint unlocks over LAN.
-- ✅ **Phase 3** — **push approval**: lock the PC → phone Yes/No push → fingerprint → unlock (LAN).
+- ✅ **Phase 3** — **push approval**: lock the PC → phone Yes/No push → fingerprint → unlock.
+- ✅ **Phase 4** — **Tailscale internet range**: unlock from anywhere (mobile data / any network). ✔ tested
 - ⬜ **Phase 3b** — headless app (no launcher icon) + sticky notification + self-hosted auto-updater.
-- ⬜ **Phase 4** — Tailscale internet range (unlock from anywhere).
-- ⬜ **Hardening** — HTTPS + ECDH pairing, no password stored at rest.
+- ⬜ **Hardening** — HTTPS + ECDH pairing, no password stored at rest; deploy to the real laptop safely.
+- ⬜ **Packaging** — one-click Windows installer + prebuilt APK + QR pairing (turnkey for other users).
 
 ## Build & test
 - Credential provider + service: see `docs/Phase1_Build_and_Test.md`.
