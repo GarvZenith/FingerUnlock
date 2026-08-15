@@ -65,7 +65,7 @@ class Program
                 title = $"Unlock {Environment.MachineName}?",
                 body = "Approve with your fingerprint",
                 priority = "high", sound = "default", categoryId = "unlock", channelId = "unlock",
-                data = new { type = "unlock", nonce }
+                data = new { type = "unlock", nonce, machine = Environment.MachineName }
               }
             : new { to = _pushToken, priority = "high", data = new { type = "cancel" } };
         try
@@ -93,6 +93,11 @@ class Program
             {
                 string pt = Field(body, "pushToken");
                 if (pt.Length > 0) { _pushToken = pt; SavePushToken(pt); code = 200; reply = "REGISTERED"; Log($"Paired phone push token from {remote}."); }
+            }
+            else if (req.HttpMethod == "POST" && path == "/info")   // auto-detect PC name
+            {
+                if (Field(body, "token") == _token)
+                { code = 200; reply = JsonSerializer.Serialize(new { machine = Environment.MachineName, user = Environment.UserName }); }
             }
             else if (req.HttpMethod == "POST" && path == "/approve")
             {

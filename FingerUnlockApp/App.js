@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Platform, Linking,
+  Text, View, TextInput, TouchableOpacity, StyleSheet, ScrollView, Platform, Linking, Alert, BackHandler,
 } from 'react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as Notifications from 'expo-notifications';
@@ -8,8 +8,8 @@ import * as Updates from 'expo-updates';
 import * as SecureStore from 'expo-secure-store';
 import Constants from 'expo-constants';
 
-const TAILSCALE_PLAY = 'https://play.google.com/store/apps/details?id=com.tailscale.ipn';
 const PORT = '5599';
+const TAILSCALE_PLAY = 'https://play.google.com/store/apps/details?id=com.tailscale.ipn';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -17,97 +17,79 @@ Notifications.setNotificationHandler({
   }),
 });
 
+// ---- storage (module-level so the cold-start handler can use it) ----
+async function loadLaptops() {
+  try { const s = await SecureStore.getItemAsync('fu_laptops'); return s ? JSON.parse(s) : []; }
+  catch { return []; }
+}
+async function saveLaptops(list) { await SecureStore.setItemAsync('fu_laptops', JSON.stringify(list)); }
+
+async function postTo(l, path, extra) {
+  return fetch(`http://${l.ip}:${PORT}/${path}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...extra, token: l.token }),
+  });
+}
+
 export default function App() {
-  const [ip, setIp] = useState('192.168.1.50');
-  const [token, setToken] = useState('');
+  const [screen, setScreen] = useState('home');    // home | settings | edit
+  const [laptops, setLaptops] = useState([]);
   const [pushToken, setPushToken] = useState('');
-  const [log, setLog] = useState('starting…');
+  const [draft, setDraft] = useState(null);         // laptop being edited
+  const [orig, setOrig] = useState(null);           // original (to detect changes)
+  const [status, setStatus] = useState({});         // machine/online per laptop id
 
-  const line = (s) => setLog((p) => (`• ${s}\n` + p).split('\n').slice(0, 12).join('\n'));
+  const refresh = async () => setLaptops(await loadLaptops());
+  useEffect(() => { refresh(); }, []);
 
-  // ---- Persist IP + token ----
-  const loaded = useRef(false);
-  useEffect(() => {
-    (async () => {
-      const [i, t] = await Promise.all([
-        SecureStore.getItemAsync('fu_ip'), SecureStore.getItemAsync('fu_token'),
-      ]);
-      if (i) setIp(i);
-      if (t) setToken(t);
-      loaded.current = true;
-    })();
-  }, []);
-  useEffect(() => { if (loaded.current) SecureStore.setItemAsync('fu_ip', ip).catch(() => {}); }, [ip]);
-  useEffect(() => { if (loaded.current && token) SecureStore.setItemAsync('fu_token', token).catch(() => {}); }, [token]);
-
-  // Always read creds from storage (state may not be ready on a cold start).
-  async function getCreds() {
-    const i = (await SecureStore.getItemAsync('fu_ip')) || ip;
-    const t = (await SecureStore.getItemAsync('fu_token')) || token;
-    return { ip: i, token: t };
-  }
-  async function post(path, extra) {
-    const { ip, token } = await getCreds();
-    return fetch(`http://${ip}:${PORT}/${path}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...extra, token }),
-    });
-  }
-
-  async function approve(nonce) {
-    try {
-      const r = await LocalAuthentication.authenticateAsync({ promptMessage: 'Unlock laptop' });
-      if (!r.success) { line('fingerprint cancelled'); return; }
-      const res = await post('approve', { nonce });
-      line(res.ok ? '✅ unlocked' : `approve failed ${res.status}`);
+  // ---- unlock handling ----
+  async function handleUnlock(machine, nonce, action) {
+    const list = await loadLaptops();
+    const lap = list.find((l) => l.machine && machine && l.machine === machine)
+      || (list.length === 1 ? list[0] : null);
+    if (!lap) return;
+    if (action === 'no') {
+      try { await postTo(lap, 'deny', { nonce }); } catch {}
       await Notifications.dismissAllNotificationsAsync();
-    } catch (e) { line('approve err: ' + e.message); }
-  }
-  async function deny(nonce) {
-    try { await post('deny', { nonce }); } catch {}
+      return;
+    }
+    const r = await LocalAuthentication.authenticateAsync({ promptMessage: `Unlock ${lap.name || lap.machine || 'laptop'}` });
+    if (!r.success) return;
+    try { await postTo(lap, 'approve', { nonce }); } catch {}
     await Notifications.dismissAllNotificationsAsync();
-    line('denied');
   }
 
-  // ---- Auto-update (EAS Update), loop-safe ----
+  // ---- auto-update ----
   const updating = useRef(false);
   async function runUpdate() {
-    if (updating.current) return;
-    updating.current = true;
+    if (updating.current) return; updating.current = true;
     try {
       await Notifications.dismissAllNotificationsAsync();
       const f = await Updates.fetchUpdateAsync();
-      if (f.isNew) { await Updates.reloadAsync(); }
-      else { line('already up to date'); updating.current = false; }
-    } catch (e) { line('update err: ' + e.message); updating.current = false; }
+      if (f.isNew) await Updates.reloadAsync(); else updating.current = false;
+    } catch { updating.current = false; }
   }
   async function checkForUpdate(manual) {
     try {
-      if (!Updates.isEnabled) { if (manual) line('updates not enabled (dev build)'); return; }
+      if (!Updates.isEnabled) { if (manual) Alert.alert('Updates', 'Not enabled (dev build)'); return; }
       const r = await Updates.checkForUpdateAsync();
       if (r.isAvailable) {
-        line('update available');
         await Notifications.scheduleNotificationAsync({
-          content: { title: 'FingerUnlock update available', body: 'Tap “Update now” to install',
-                     categoryId: 'update', data: { type: 'update' } }, trigger: null,
-        });
-      } else if (manual) line('no update');
-    } catch (e) { if (manual) line('update check err: ' + e.message); }
+          content: { title: 'FingerUnlock update available', body: 'Tap “Update now”',
+                     categoryId: 'update', data: { type: 'update' } }, trigger: null });
+      } else if (manual) Alert.alert('Updates', 'You are up to date');
+    } catch (e) { if (manual) Alert.alert('Updates', e.message); }
   }
 
-  // Handle a notification response ONCE (works warm AND on cold start).
   async function handleResponse(resp) {
     if (!resp) return;
     const id = resp.notification.request.identifier;
     const last = await SecureStore.getItemAsync('fu_lastNotif');
-    if (last === id) return;                 // already handled this notification
+    if (last === id) return;
     await SecureStore.setItemAsync('fu_lastNotif', id);
-
     const d = resp.notification.request.content.data || {};
     if (d.type === 'update') { runUpdate(); return; }
-    if (d.type !== 'unlock') return;
-    if (resp.actionIdentifier === 'no') deny(d.nonce);
-    else approve(d.nonce);                    // "Yes" button OR tapping the notification
+    if (d.type === 'unlock') handleUnlock(d.machine, d.nonce, resp.actionIdentifier);
   }
 
   useEffect(() => {
@@ -122,23 +104,15 @@ export default function App() {
       ]);
       if (Platform.OS === 'android') {
         await Notifications.setNotificationChannelAsync('unlock', {
-          name: 'Unlock requests', importance: Notifications.AndroidImportance.MAX, sound: 'default',
-        });
+          name: 'Unlock requests', importance: Notifications.AndroidImportance.MAX, sound: 'default' });
       }
       try {
         const projectId = Constants?.expoConfig?.extra?.eas?.projectId ?? Constants?.easConfig?.projectId;
-        const t = (await Notifications.getExpoPushTokenAsync(projectId ? { projectId } : undefined)).data;
-        setPushToken(t);
-        line('push token ready');
-      } catch (e) { line('push token err: ' + e.message); }
-
-      // If a tap COLD-STARTED the app, handle it now.
-      const coldResp = await Notifications.getLastNotificationResponseAsync();
-      handleResponse(coldResp);
-
+        setPushToken((await Notifications.getExpoPushTokenAsync(projectId ? { projectId } : undefined)).data);
+      } catch {}
+      handleResponse(await Notifications.getLastNotificationResponseAsync());   // cold-start tap
       checkForUpdate(false);
     })();
-
     const recv = Notifications.addNotificationReceivedListener((n) => {
       if ((n.request.content.data || {}).type === 'cancel') Notifications.dismissAllNotificationsAsync();
     });
@@ -146,52 +120,174 @@ export default function App() {
     return () => { recv.remove(); resp.remove(); };
   }, []);
 
-  async function pair() {
-    try { const res = await post('register', { pushToken }); line(res.ok ? '✅ paired' : `pair ${res.status}`); }
-    catch (e) { line('pair err: ' + e.message); }
+  // ---- ping each laptop for name + online status (homepage) ----
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      for (const l of laptops) {
+        try {
+          const res = await postTo(l, 'info', {});
+          if (!alive) return;
+          if (res.ok) {
+            const j = JSON.parse(await res.text());
+            setStatus((s) => ({ ...s, [l.id]: { online: true, machine: j.machine, user: j.user } }));
+          } else setStatus((s) => ({ ...s, [l.id]: { online: false } }));
+        } catch { if (alive) setStatus((s) => ({ ...s, [l.id]: { online: false } })); }
+      }
+    })();
+    return () => { alive = false; };
+  }, [laptops, screen]);
+
+  // ---- edit flow ----
+  const isDirty = () => draft && orig && JSON.stringify(draft) !== JSON.stringify(orig);
+  function openEdit(lap) {
+    const d = lap || { id: String(Date.now()), name: '', ip: '', token: '', machine: '' };
+    setDraft(d); setOrig(lap || d); setScreen('edit');
+  }
+  async function commitDraft() {
+    const list = await loadLaptops();
+    const i = list.findIndex((l) => l.id === draft.id);
+    if (i >= 0) list[i] = draft; else list.push(draft);
+    await saveLaptops(list); await refresh();
+    setDraft(null); setOrig(null); setScreen('settings');
+  }
+  function leaveEdit() {
+    if (draft && orig && draft !== orig && isDirty()) {
+      Alert.alert('Save changes?', '', [
+        { text: 'Discard', style: 'destructive', onPress: () => { setDraft(null); setScreen('settings'); } },
+        { text: 'Save', onPress: commitDraft },
+      ], { cancelable: true, onDismiss: () => { setDraft(null); setScreen('settings'); } });   // dismiss = discard
+    } else { setDraft(null); setScreen('settings'); }
+  }
+  async function detect() {
+    try {
+      const res = await postTo(draft, 'info', {});
+      if (res.ok) { const j = JSON.parse(await res.text());
+        setDraft((d) => ({ ...d, machine: j.machine, name: d.name || j.machine })); }
+      else Alert.alert('Detect', `Failed (${res.status}) — check IP/token`);
+    } catch (e) { Alert.alert('Detect', e.message); }
+  }
+  async function pairDraft() {
+    try { const res = await postTo(draft, 'register', { pushToken });
+      Alert.alert('Pair', res.ok ? '✅ Paired' : `Failed (${res.status})`); }
+    catch (e) { Alert.alert('Pair', e.message); }
+  }
+  async function removeLaptop(id) {
+    const list = (await loadLaptops()).filter((l) => l.id !== id);
+    await saveLaptops(list); await refresh();
   }
 
+  // hardware back button
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (screen === 'edit') { leaveEdit(); return true; }
+      if (screen === 'settings') { setScreen('home'); return true; }
+      return false;
+    });
+    return () => sub.remove();
+  }, [screen, draft, orig]);
+
+  // ================= RENDER =================
+  if (screen === 'edit' && draft) {
+    return (
+      <ScrollView contentContainerStyle={styles.c}>
+        <Text style={styles.h}>{orig?.name || orig?.machine ? 'Edit laptop' : 'Add laptop'}</Text>
+
+        <Text style={styles.label}>Name (optional)</Text>
+        <TextInput style={styles.input} value={draft.name} onChangeText={(v) => setDraft({ ...draft, name: v })} placeholder="My laptop" placeholderTextColor="#889" />
+
+        <Text style={styles.label}>Laptop IP</Text>
+        <TextInput style={styles.input} value={draft.ip} onChangeText={(v) => setDraft({ ...draft, ip: v })}
+          autoCapitalize="none" keyboardType="numbers-and-punctuation" placeholder="192.168.x.x or Tailscale IP" placeholderTextColor="#889" />
+
+        <Text style={styles.label}>Token</Text>
+        <TextInput style={styles.input} value={draft.token} onChangeText={(v) => setDraft({ ...draft, token: v })}
+          autoCapitalize="none" secureTextEntry placeholder="same as service.ini" placeholderTextColor="#889" />
+
+        {draft.machine ? <Text style={styles.detected}>Detected: {draft.machine}</Text> : null}
+
+        <TouchableOpacity style={styles.btnAlt} onPress={detect}><Text style={styles.btnAltText}>Detect PC name</Text></TouchableOpacity>
+        <TouchableOpacity style={styles.btnAlt} onPress={pairDraft}><Text style={styles.btnAltText}>Pair this phone</Text></TouchableOpacity>
+
+        <TouchableOpacity style={styles.btn} onPress={commitDraft}><Text style={styles.btnText}>Save changes</Text></TouchableOpacity>
+        <TouchableOpacity style={styles.btnGhost} onPress={leaveEdit}><Text style={styles.btnGhostText}>Back</Text></TouchableOpacity>
+      </ScrollView>
+    );
+  }
+
+  if (screen === 'settings') {
+    return (
+      <ScrollView contentContainerStyle={styles.c}>
+        <Text style={styles.h}>⚙ Settings</Text>
+        {laptops.length === 0 ? <Text style={styles.dim}>No laptops yet.</Text> : null}
+        {laptops.map((l) => (
+          <View key={l.id} style={styles.row}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowName}>{l.name || l.machine || l.ip}</Text>
+              <Text style={styles.dim}>{l.ip}</Text>
+            </View>
+            <TouchableOpacity onPress={() => openEdit(l)}><Text style={styles.icon}>✏️</Text></TouchableOpacity>
+            <TouchableOpacity onPress={() => Alert.alert('Remove', l.name || l.ip, [{ text: 'Cancel' }, { text: 'Remove', style: 'destructive', onPress: () => removeLaptop(l.id) }])}>
+              <Text style={styles.icon}>🗑️</Text></TouchableOpacity>
+          </View>
+        ))}
+        <TouchableOpacity style={styles.btn} onPress={() => openEdit(null)}><Text style={styles.btnText}>+ Add laptop</Text></TouchableOpacity>
+        <TouchableOpacity style={styles.btnAlt} onPress={() => Linking.openURL(TAILSCALE_PLAY)}><Text style={styles.btnAltText}>Install Tailscale (internet unlock)</Text></TouchableOpacity>
+        <TouchableOpacity style={styles.btnAlt} onPress={() => checkForUpdate(true)}><Text style={styles.btnAltText}>Check for update</Text></TouchableOpacity>
+        <TouchableOpacity style={styles.btnGhost} onPress={() => setScreen('home')}><Text style={styles.btnGhostText}>Back</Text></TouchableOpacity>
+      </ScrollView>
+    );
+  }
+
+  // HOME
   return (
     <ScrollView contentContainerStyle={styles.c}>
-      <Text style={styles.title}>🔓 FingerUnlock</Text>
+      <View style={styles.topbar}>
+        <Text style={styles.title}>🔓 FingerUnlock</Text>
+        <TouchableOpacity onPress={() => setScreen('settings')}><Text style={styles.gear}>⚙</Text></TouchableOpacity>
+      </View>
 
-      <Text style={styles.label}>Laptop IP (saved automatically)</Text>
-      <TextInput style={styles.input} value={ip} onChangeText={setIp}
-        autoCapitalize="none" keyboardType="numbers-and-punctuation" />
-
-      <Text style={styles.label}>Token (saved securely)</Text>
-      <TextInput style={styles.input} value={token} onChangeText={setToken}
-        autoCapitalize="none" secureTextEntry />
-
-      <TouchableOpacity style={styles.btn} onPress={pair}>
-        <Text style={styles.btnText}>Pair this phone</Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity style={styles.btnAlt} onPress={() => Linking.openURL(TAILSCALE_PLAY)}>
-        <Text style={styles.btnAltText}>Install Tailscale (for unlock over internet)</Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity style={styles.btnAlt} onPress={() => checkForUpdate(true)}>
-        <Text style={styles.btnAltText}>Check for update</Text>
-      </TouchableOpacity>
-
-      <Text style={styles.label}>Phone push token</Text>
-      <Text selectable style={styles.mono}>{pushToken || '…'}</Text>
-
-      <Text style={styles.label}>Log</Text>
-      <Text style={styles.mono}>{log}</Text>
+      {laptops.length === 0 ? (
+        <TouchableOpacity style={styles.btn} onPress={() => setScreen('settings')}>
+          <Text style={styles.btnText}>+ Add your first laptop</Text>
+        </TouchableOpacity>
+      ) : laptops.map((l) => {
+        const st = status[l.id] || {};
+        return (
+          <View key={l.id} style={styles.card}>
+            <View style={[styles.dot, { backgroundColor: st.online ? '#37d67a' : '#666' }]} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.cardName}>{l.name || st.machine || l.machine || l.ip}</Text>
+              <Text style={styles.dim}>{st.machine || l.machine || ''}{st.user ? ` · ${st.user}` : ''}</Text>
+              <Text style={styles.dim}>{st.online ? 'connected' : 'offline'}</Text>
+            </View>
+          </View>
+        );
+      })}
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  c: { backgroundColor: '#0f1220', padding: 24, paddingTop: 60, flexGrow: 1 },
-  title: { color: '#fff', fontSize: 30, fontWeight: '700', marginBottom: 16, textAlign: 'center' },
+  c: { backgroundColor: '#0f1220', padding: 22, paddingTop: 56, flexGrow: 1 },
+  topbar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 },
+  title: { color: '#fff', fontSize: 26, fontWeight: '700' },
+  gear: { color: '#9ab6ff', fontSize: 26 },
+  h: { color: '#fff', fontSize: 22, fontWeight: '700', marginBottom: 14 },
   label: { color: '#aab', fontSize: 13, marginTop: 14, marginBottom: 6 },
   input: { backgroundColor: '#1b2030', color: '#fff', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12, fontSize: 16 },
+  detected: { color: '#37d67a', fontSize: 13, marginTop: 10 },
+  card: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1b2030', borderRadius: 12, padding: 16, marginBottom: 12 },
+  dot: { width: 12, height: 12, borderRadius: 6, marginRight: 12 },
+  cardName: { color: '#fff', fontSize: 18, fontWeight: '600' },
+  row: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1b2030', borderRadius: 12, padding: 14, marginBottom: 10 },
+  rowName: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  icon: { fontSize: 20, marginLeft: 14 },
+  dim: { color: '#889', fontSize: 13, marginTop: 2 },
   btn: { backgroundColor: '#3b6ef5', borderRadius: 12, paddingVertical: 14, alignItems: 'center', marginTop: 18 },
   btnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
   btnAlt: { borderColor: '#3b6ef5', borderWidth: 1, borderRadius: 12, paddingVertical: 12, alignItems: 'center', marginTop: 10 },
   btnAltText: { color: '#9ab6ff', fontSize: 14, fontWeight: '600' },
-  mono: { color: '#9fd', fontSize: 12, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', marginTop: 4 },
+  btnGhost: { paddingVertical: 12, alignItems: 'center', marginTop: 8 },
+  btnGhostText: { color: '#889', fontSize: 15 },
 });
