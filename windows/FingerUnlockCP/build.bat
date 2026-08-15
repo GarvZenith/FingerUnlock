@@ -8,7 +8,7 @@ setlocal
 cl /nologo /LD /EHsc /W3 /DUNICODE /D_UNICODE ^
    dll.cpp helpers.cpp CFingerUnlockProvider.cpp CFingerUnlockCredential.cpp ^
    /link /DEF:FingerUnlockCP.def ^
-   ole32.lib shlwapi.lib secur32.lib advapi32.lib user32.lib ^
+   ole32.lib shlwapi.lib secur32.lib advapi32.lib user32.lib crypt32.lib ^
    /OUT:FingerUnlockCP.dll
 
 if %ERRORLEVEL%==0 (

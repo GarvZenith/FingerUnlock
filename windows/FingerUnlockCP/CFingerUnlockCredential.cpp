@@ -4,6 +4,43 @@
 #include "dll.h"
 #include <shlwapi.h>    // SHStrDupW, QISearch
 #include <ntsecapi.h>
+#include <wincrypt.h>   // CryptUnprotectData (DPAPI)
+
+// Stage 2 (ECDH): the service drops a DPAPI(LocalMachine)-protected password at
+// C:\FingerUnlock\cred.bin on an approved unlock. Read it once, wipe + delete it,
+// and return true. If it isn't there we fall back to config.ini (Stage 1 path),
+// so nothing breaks during rollout.
+static bool ReadCredBlob(PWSTR pwzOut, DWORD cchOut)
+{
+    LPCWSTR path = L"C:\\FingerUnlock\\cred.bin";
+    HANDLE h = CreateFileW(path, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return false;
+
+    bool ok = false;
+    DWORD size = GetFileSize(h, NULL);
+    if (size > 0 && size < 8192) {
+        BYTE* buf = (BYTE*)LocalAlloc(LPTR, size);
+        DWORD read = 0;
+        if (buf && ReadFile(h, buf, size, &read, NULL) && read == size) {
+            DATA_BLOB in;  in.cbData = read; in.pbData = buf;
+            DATA_BLOB out; out.cbData = 0;   out.pbData = NULL;
+            if (CryptUnprotectData(&in, NULL, NULL, NULL, NULL, 0, &out)) {
+                DWORD chars = out.cbData / sizeof(WCHAR);   // stored as UTF-16LE
+                if (chars < cchOut) {
+                    memcpy(pwzOut, out.pbData, out.cbData);
+                    pwzOut[chars] = L'\0';
+                    ok = true;
+                }
+                SecureZeroMemory(out.pbData, out.cbData);
+                LocalFree(out.pbData);
+            }
+        }
+        if (buf) { SecureZeroMemory(buf, size); LocalFree(buf); }
+    }
+    CloseHandle(h);
+    DeleteFileW(path);   // one-shot: consume it
+    return ok;
+}
 
 CFingerUnlockCredential::CFingerUnlockCredential()
     : _cRef(1), _cpus(CPUS_INVALID), _pCredProvCredentialEvents(NULL)
@@ -124,8 +161,12 @@ HRESULT CFingerUnlockCredential::GetSerialization(
     WCHAR wzPass[256]   = {0};
     WCHAR wzDomain[256] = {0};
     GetPrivateProfileStringW(L"credentials", L"username", L"", wzUser,   ARRAYSIZE(wzUser),   FINGERUNLOCK_CONFIG_PATH);
-    GetPrivateProfileStringW(L"credentials", L"password", L"", wzPass,   ARRAYSIZE(wzPass),   FINGERUNLOCK_CONFIG_PATH);
     GetPrivateProfileStringW(L"credentials", L"domain",   L".", wzDomain, ARRAYSIZE(wzDomain), FINGERUNLOCK_CONFIG_PATH);
+
+    // Password: prefer the phone-delivered DPAPI blob (Stage 2 ECDH); if it isn't
+    // present, fall back to config.ini (Stage 1). Username/domain aren't secret.
+    if (!ReadCredBlob(wzPass, ARRAYSIZE(wzPass)))
+        GetPrivateProfileStringW(L"credentials", L"password", L"", wzPass, ARRAYSIZE(wzPass), FINGERUNLOCK_CONFIG_PATH);
 
     // "." (or blank) means "this machine" -> use the local computer name.
     if (wzDomain[0] == L'\0' || (wzDomain[0] == L'.' && wzDomain[1] == L'\0')) {
