@@ -59,6 +59,16 @@ export default function App() {
     await Notifications.dismissAllNotificationsAsync();
   }
 
+  // Tap a laptop card -> fingerprint -> unlock on demand (uses the token-only /unlock).
+  async function unlockNow(l) {
+    const r = await LocalAuthentication.authenticateAsync({ promptMessage: `Unlock ${l.name || l.machine || 'laptop'}` });
+    if (!r.success) return;
+    try {
+      const res = await postTo(l, 'unlock', {});
+      Alert.alert('FingerUnlock', res.ok ? `✅ Unlock sent to ${l.name || l.machine || l.ip}` : `Failed (${res.status})`);
+    } catch (e) { Alert.alert('FingerUnlock', e.message); }
+  }
+
   // ---- auto-update ----
   const updating = useRef(false);
   async function runUpdate() {
@@ -254,14 +264,14 @@ export default function App() {
       ) : laptops.map((l) => {
         const st = status[l.id] || {};
         return (
-          <View key={l.id} style={styles.card}>
+          <TouchableOpacity key={l.id} style={styles.card} onPress={() => unlockNow(l)}>
             <View style={[styles.dot, { backgroundColor: st.online ? '#37d67a' : '#666' }]} />
             <View style={{ flex: 1 }}>
               <Text style={styles.cardName}>{l.name || st.machine || l.machine || l.ip}</Text>
               <Text style={styles.dim}>{st.machine || l.machine || ''}{st.user ? ` · ${st.user}` : ''}</Text>
-              <Text style={styles.dim}>{st.online ? 'connected' : 'offline'}</Text>
+              <Text style={styles.dim}>{st.online ? 'connected · tap to unlock' : 'offline'}</Text>
             </View>
-          </View>
+          </TouchableOpacity>
         );
       })}
     </ScrollView>
