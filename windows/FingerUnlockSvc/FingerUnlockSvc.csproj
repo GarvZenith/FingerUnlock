@@ -8,4 +8,9 @@
     <AssemblyName>FingerUnlockSvc</AssemblyName>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- SessionSwitch (lock/unlock) events -->
+    <PackageReference Include="Microsoft.Win32.SystemEvents" Version="8.0.0" />
+  </ItemGroup>
+
 </Project>

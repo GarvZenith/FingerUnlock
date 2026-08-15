@@ -1,15 +1,13 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
-using System.Runtime.InteropServices;
+using Microsoft.Win32;
 
 // FingerUnlock push service (Phase 3).
-// Detects when the workstation locks (via OpenInputDesktop) and pushes the phone
-// a Yes/No notification. On Yes -> phone does fingerprint -> POST /approve with the
-// nonce -> we write unlock.flag, which the credential provider auto-unlocks on.
-//
-// Lock detection is done here (not in the credential provider) so it fires the
-// instant the session locks, regardless of the lock-screen UI state.
+// Fires the instant the workstation locks (Win+L) via the SessionSwitch event,
+// pushing the phone a Yes/No notification. On Yes -> phone does fingerprint ->
+// POST /approve with the nonce -> we write unlock.flag, which the credential
+// provider auto-unlocks on.
 
 class Program
 {
@@ -17,10 +15,6 @@ class Program
     const string FlagPath   = Dir + @"\unlock.flag";
     const string ConfigPath = Dir + @"\service.ini";
     const string ExpoPush   = "https://exp.host/--/api/v2/push/send";
-
-    [DllImport("user32.dll")] static extern IntPtr OpenInputDesktop(uint dwFlags, bool fInherit, uint dwDesiredAccess);
-    [DllImport("user32.dll")] static extern bool   CloseDesktop(IntPtr hDesktop);
-    const uint DESKTOP_SWITCHDESKTOP = 0x0100;
 
     static readonly HttpClient Http = new();
     static readonly object Gate = new();
@@ -33,46 +27,32 @@ class Program
     static void Main()
     {
         LoadConfig();
-        new Thread(LockWatchLoop) { IsBackground = true }.Start();
+
+        // Fires immediately on lock/unlock — no dependency on the lock-screen UI.
+        SystemEvents.SessionSwitch += OnSessionSwitch;
 
         var listener = new HttpListener();
         listener.Prefixes.Add($"http://+:{_port}/");
         try { listener.Start(); }
         catch (HttpListenerException ex) { Log($"Bind failed: {ex.Message}. Run this terminal AS ADMIN."); return; }
 
-        Log($"FingerUnlock push service on :{_port}. Phone token {(_pushToken.Length > 0 ? "SET" : "NOT set")}.");
+        Log($"FingerUnlock push service on :{_port}. Phone token {(_pushToken.Length > 0 ? "SET" : "NOT set")}. Waiting for lock...");
         while (true) HandleHttp(listener.GetContext());
     }
 
-    // Poll the input desktop: when the workstation is locked, the secure desktop
-    // is active and OpenInputDesktop returns NULL for our user-session process.
-    static void LockWatchLoop()
+    static void OnSessionSwitch(object? sender, SessionSwitchEventArgs e)
     {
-        bool wasLocked = false;
-        while (true)
+        if (e.Reason == SessionSwitchReason.SessionLock)
         {
-            try
-            {
-                IntPtr h = OpenInputDesktop(0, false, DESKTOP_SWITCHDESKTOP);
-                bool locked = (h == IntPtr.Zero);
-                if (h != IntPtr.Zero) CloseDesktop(h);
-
-                if (locked && !wasLocked)
-                {
-                    string nonce = Guid.NewGuid().ToString("N");
-                    lock (Gate) _pendingNonce = nonce;
-                    SendPush(unlock: true, nonce);
-                    Log($"Session LOCKED -> push sent (nonce {nonce[..8]}).");
-                }
-                else if (!locked && wasLocked)
-                {
-                    bool had; lock (Gate) { had = _pendingNonce != null; _pendingNonce = null; }
-                    if (had) { SendPush(unlock: false, ""); Log("Session UNLOCKED -> cancel push."); }
-                }
-                wasLocked = locked;
-            }
-            catch (Exception ex) { Log("lockwatch: " + ex.Message); }
-            Thread.Sleep(1000);
+            string nonce = Guid.NewGuid().ToString("N");
+            lock (Gate) _pendingNonce = nonce;
+            SendPush(unlock: true, nonce);
+            Log($"Session LOCKED -> push sent (nonce {nonce[..8]}).");
+        }
+        else if (e.Reason == SessionSwitchReason.SessionUnlock)
+        {
+            bool had; lock (Gate) { had = _pendingNonce != null; _pendingNonce = null; }
+            if (had) { SendPush(unlock: false, ""); Log("Session UNLOCKED -> cancel push."); }
         }
     }
 
