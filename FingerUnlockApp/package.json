@@ -10,12 +10,13 @@
   },
   "dependencies": {
     "expo": "~54.0.35",
+    "expo-build-properties": "~1.0.10",
     "expo-constants": "~18.0.13",
-    "expo-device": "~7.0.2",
+    "expo-device": "~8.0.10",
     "expo-local-authentication": "~17.0.8",
     "expo-notifications": "~0.32.17",
     "expo-status-bar": "~3.0.9",
-    "expo-updates": "~0.27.1",
+    "expo-updates": "~29.0.19",
     "fs-extra": "^11.4.0",
     "react": "19.1.0",
     "react-native": "0.81.5"

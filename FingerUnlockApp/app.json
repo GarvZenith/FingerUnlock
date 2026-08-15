@@ -9,27 +9,14 @@
     "android": {
       "package": "com.garv.fingerunlock",
       "googleServicesFile": "./google-services.json",
-      "usesCleartextTraffic": true,
-      "permissions": [
-        "USE_BIOMETRIC",
-        "USE_FINGERPRINT",
-        "POST_NOTIFICATIONS",
-        "android.permission.USE_BIOMETRIC",
-        "android.permission.USE_FINGERPRINT"
-      ]
+      "permissions": ["USE_BIOMETRIC", "USE_FINGERPRINT", "POST_NOTIFICATIONS"]
     },
-    "ios": {
-      "supportsTablet": true
-    },
+    "ios": { "supportsTablet": true },
     "plugins": [
       "expo-local-authentication",
-      "expo-notifications"
+      "expo-notifications",
+      ["expo-build-properties", { "android": { "usesCleartextTraffic": true } }]
     ],
-    "extra": {
-      "eas": {
-        "projectId": "484d0eaa-5ea4-41f1-a361-0dbe33067fc4"
-      }
-    },
-    "owner": "zenith28s-team"
+    "extra": { "eas": { "projectId": "484d0eaa-5ea4-41f1-a361-0dbe33067fc4" } }
   }
 }

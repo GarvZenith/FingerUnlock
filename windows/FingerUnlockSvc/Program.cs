@@ -1,23 +1,26 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Runtime.InteropServices;
 
 // FingerUnlock push service (Phase 3).
-// When the credential provider signals the lock screen is up (locked.flag), this
-// sends a push to the paired phone. The phone shows a Yes/No notification; on Yes
-// it does fingerprint and POSTs /approve with the nonce; we then write unlock.flag
-// (which the credential provider auto-unlocks on). closed.flag -> cancel the push.
+// Detects when the workstation locks (via OpenInputDesktop) and pushes the phone
+// a Yes/No notification. On Yes -> phone does fingerprint -> POST /approve with the
+// nonce -> we write unlock.flag, which the credential provider auto-unlocks on.
 //
-// Still HTTP + shared-secret token (LAN test). Phase: HTTPS + ECDH later.
+// Lock detection is done here (not in the credential provider) so it fires the
+// instant the session locks, regardless of the lock-screen UI state.
 
 class Program
 {
     const string Dir        = @"C:\FingerUnlock";
     const string FlagPath   = Dir + @"\unlock.flag";
-    const string LockedPath = Dir + @"\locked.flag";
-    const string ClosedPath = Dir + @"\closed.flag";
     const string ConfigPath = Dir + @"\service.ini";
     const string ExpoPush   = "https://exp.host/--/api/v2/push/send";
+
+    [DllImport("user32.dll")] static extern IntPtr OpenInputDesktop(uint dwFlags, bool fInherit, uint dwDesiredAccess);
+    [DllImport("user32.dll")] static extern bool   CloseDesktop(IntPtr hDesktop);
+    const uint DESKTOP_SWITCHDESKTOP = 0x0100;
 
     static readonly HttpClient Http = new();
     static readonly object Gate = new();
@@ -30,7 +33,7 @@ class Program
     static void Main()
     {
         LoadConfig();
-        new Thread(WatchLoop) { IsBackground = true }.Start();
+        new Thread(LockWatchLoop) { IsBackground = true }.Start();
 
         var listener = new HttpListener();
         listener.Prefixes.Add($"http://+:{_port}/");
@@ -41,30 +44,35 @@ class Program
         while (true) HandleHttp(listener.GetContext());
     }
 
-    // Watch for the credential provider's lock/close signals.
-    static void WatchLoop()
+    // Poll the input desktop: when the workstation is locked, the secure desktop
+    // is active and OpenInputDesktop returns NULL for our user-session process.
+    static void LockWatchLoop()
     {
+        bool wasLocked = false;
         while (true)
         {
             try
             {
-                if (File.Exists(LockedPath))
+                IntPtr h = OpenInputDesktop(0, false, DESKTOP_SWITCHDESKTOP);
+                bool locked = (h == IntPtr.Zero);
+                if (h != IntPtr.Zero) CloseDesktop(h);
+
+                if (locked && !wasLocked)
                 {
-                    File.Delete(LockedPath);
                     string nonce = Guid.NewGuid().ToString("N");
                     lock (Gate) _pendingNonce = nonce;
                     SendPush(unlock: true, nonce);
-                    Log($"Lock screen up -> push sent (nonce {nonce[..8]}).");
+                    Log($"Session LOCKED -> push sent (nonce {nonce[..8]}).");
                 }
-                if (File.Exists(ClosedPath))
+                else if (!locked && wasLocked)
                 {
-                    File.Delete(ClosedPath);
                     bool had; lock (Gate) { had = _pendingNonce != null; _pendingNonce = null; }
-                    if (had) { SendPush(unlock: false, ""); Log("Lock screen gone -> cancel push."); }
+                    if (had) { SendPush(unlock: false, ""); Log("Session UNLOCKED -> cancel push."); }
                 }
+                wasLocked = locked;
             }
-            catch (Exception ex) { Log("watch: " + ex.Message); }
-            Thread.Sleep(400);
+            catch (Exception ex) { Log("lockwatch: " + ex.Message); }
+            Thread.Sleep(1000);
         }
     }
 
@@ -76,14 +84,10 @@ class Program
                 to = _pushToken,
                 title = $"Unlock {Environment.MachineName}?",
                 body = "Approve with your fingerprint",
-                priority = "high", sound = "default", categoryId = "unlock",
-                channelId = "unlock",
+                priority = "high", sound = "default", categoryId = "unlock", channelId = "unlock",
                 data = new { type = "unlock", nonce }
               }
-            : new {
-                to = _pushToken, priority = "high",
-                data = new { type = "cancel" }
-              };
+            : new { to = _pushToken, priority = "high", data = new { type = "cancel" } };
         try
         {
             var content = new StringContent(JsonSerializer.Serialize(msg), Encoding.UTF8, "application/json");
