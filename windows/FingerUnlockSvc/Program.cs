@@ -29,8 +29,9 @@ static class Program
     static readonly object Gate = new();
     static readonly object LogGate = new();
     static string? _pendingNonce;
-    static volatile bool _locked = false;   // current lock state (for /info)
-    static bool _service = false;           // running as a Windows Service?
+    static volatile bool _locked = false;       // current lock state (for /info)
+    static volatile bool _shuttingDown = false; // system is powering off/restarting -> no pushes
+    static bool _service = false;               // running as a Windows Service?
 
     static int    _port = 5599;
     static string _token = "changeme";
@@ -51,9 +52,10 @@ static class Program
     static void RunConsole()
     {
         LoadConfig();
+        Crypto.Load();
         SystemEvents.SessionSwitch += (_, e) =>
         {
-            if (e.Reason == SessionSwitchReason.SessionLock)        OnLocked();
+            if (e.Reason == SessionSwitchReason.SessionLock)        OnLocked(false);
             else if (e.Reason == SessionSwitchReason.SessionUnlock) OnUnlocked();
         };
         if (!StartHttp()) return;
@@ -69,63 +71,81 @@ static class Program
             ServiceName = "FingerUnlockSvc";
             CanHandleSessionChangeEvent = true;
             CanStop = true;
+            CanShutdown = true;
         }
         protected override void OnStart(string[] args)
         {
             LoadConfig();
+            Crypto.Load();
             StartHttp();
             // At boot we sit at the logon screen with no interactive user -> treat
-            // as locked and ring the phone (best-effort; network may still be coming up).
-            _locked = CurrentConsoleUser().Length == 0;
-            Log($"Service started on :{_port}. locked={_locked}. Phone token {(_pushToken.Length > 0 ? "SET" : "NOT set")}.");
-            if (_locked) BeginColdBootPush();
+            // as locked and ring the phone ONCE (retry while the network comes up).
+            bool atLogon = CurrentConsoleUser().Length == 0;
+            Log($"Service started on :{_port}. atLogon={atLogon}. Phone token {(_pushToken.Length > 0 ? "SET" : "NOT set")}.");
+            if (atLogon) OnLocked(retry: true);
+            else _locked = false;
         }
         protected override void OnStop() => Log("Service stopping.");
+        // Powering off / restarting: never ring the phone during teardown.
+        protected override void OnShutdown()
+        {
+            _shuttingDown = true;
+            lock (Gate) _pendingNonce = null;   // cancel any pending push + stop the retry loop
+            Log("System shutting down -> pushes suppressed.");
+        }
         protected override void OnSessionChange(SessionChangeDescription c)
         {
             switch (c.Reason)
             {
-                case SessionChangeReason.SessionLock:
-                case SessionChangeReason.SessionLogoff:  OnLocked();   break;
+                case SessionChangeReason.SessionLock:    OnLocked(false); break;
                 case SessionChangeReason.SessionUnlock:
-                case SessionChangeReason.SessionLogon:   OnUnlocked(); break;
+                case SessionChangeReason.SessionLogon:   OnUnlocked();    break;
+                case SessionChangeReason.SessionLogoff:  _locked = true;  break;  // back at logon screen, but DON'T push (this also fires on restart/shutdown)
             }
         }
     }
 
     // ---- shared lock/unlock logic --------------------------------------------
-    static void OnLocked()
+    // Sends exactly ONE unlock push per lock. Idempotent: if we're already locked
+    // with a push pending, extra lock events (which Windows fires a couple of times
+    // around the logon screen at boot) do NOT create duplicate notifications.
+    // retry=true -> keep trying every 2s while the network/Tailscale comes up (cold boot).
+    static void OnLocked(bool retry)
     {
-        _locked = true;
-        string nonce = Guid.NewGuid().ToString("N");
-        lock (Gate) _pendingNonce = nonce;
-        SendPush(true, nonce);
-        Log($"LOCKED -> push sent (nonce {nonce[..8]}).");
+        string nonce;
+        lock (Gate)
+        {
+            if (_locked && _pendingNonce != null) return;   // already notified -> no duplicate
+            _locked = true;
+            nonce = _pendingNonce = Guid.NewGuid().ToString("N");
+        }
+        if (_shuttingDown) { Log("locked during shutdown -> no push."); return; }
+
+        if (retry)
+        {
+            _ = Task.Run(() =>
+            {
+                for (int i = 0; i < 20; i++)   // ~40s window
+                {
+                    lock (Gate) { if (_pendingNonce != nonce) return; }   // unlocked / superseded
+                    if (_shuttingDown) return;
+                    if (SendPush(true, nonce)) { Log($"cold-boot push delivered (nonce {nonce[..8]})."); return; }
+                    Thread.Sleep(2000);
+                }
+                Log("cold-boot push gave up (no network / no token).");
+            });
+        }
+        else
+        {
+            SendPush(true, nonce);
+            Log($"LOCKED -> push (nonce {nonce[..8]}).");
+        }
     }
 
     static void OnUnlocked()
     {
-        _locked = false;
-        bool had; lock (Gate) { had = _pendingNonce != null; _pendingNonce = null; }
-        if (had) { SendPush(false, ""); Log("UNLOCKED -> cancel push."); }
-    }
-
-    // Cold-boot push with a few retries while the network (esp. Tailscale) comes up.
-    // Stops early if the machine is unlocked/logged-on in the meantime.
-    static void BeginColdBootPush()
-    {
-        string nonce = Guid.NewGuid().ToString("N");
-        lock (Gate) _pendingNonce = nonce;
-        _ = Task.Run(() =>
-        {
-            for (int i = 0; i < 20; i++)   // ~40s window, retry every 2s while the network/Tailscale comes up
-            {
-                lock (Gate) { if (_pendingNonce != nonce) return; }   // logged on / superseded
-                if (SendPush(true, nonce)) { Log("Cold-boot push delivered."); return; }
-                Thread.Sleep(2000);
-            }
-            Log("Cold-boot push gave up (no network / no token).");
-        });
+        bool had; lock (Gate) { had = _pendingNonce != null; _pendingNonce = null; _locked = false; }
+        if (had && !_shuttingDown) { SendPush(false, ""); Log("UNLOCKED -> cancel push."); }
     }
 
     // Returns true on a 2xx from Expo.
@@ -191,7 +211,16 @@ static class Program
             else if (req.HttpMethod == "POST" && path == "/info")   // auto-detect PC name + lock state
             {
                 if (Field(body, "token") == _token)
-                { code = 200; reply = JsonSerializer.Serialize(new { machine = Environment.MachineName, user = DisplayUser(), locked = _locked }); }
+                { code = 200; reply = JsonSerializer.Serialize(new { machine = Environment.MachineName, user = DisplayUser(), locked = _locked, paired = Crypto.Ready }); }
+            }
+            else if (req.HttpMethod == "POST" && path == "/pair2")   // exchange ECDH public keys (Stage 2)
+            {
+                if (Field(body, "token") == _token)
+                {
+                    string pub = Field(body, "phonePub");
+                    if (pub.Length > 0) { Crypto.SetPhonePub(pub); Log($"ECDH paired with phone from {remote}."); }
+                    code = 200; reply = JsonSerializer.Serialize(new { pcPub = Crypto.PublicKeyHex() });
+                }
             }
             else if (req.HttpMethod == "POST" && path == "/approve")
             {
@@ -199,9 +228,20 @@ static class Program
                 bool ok; lock (Gate) ok = tok == _token && nonce.Length > 0 && nonce == _pendingNonce;
                 if (ok)
                 {
+                    // Stage 2: if the phone sent an encrypted password blob, decrypt it and
+                    // hand it to the credential provider (cred.bin). Otherwise fall back to
+                    // the old flag-only path (CP uses config.ini) so nothing breaks.
+                    string iv = Field(body, "iv"), ct = Field(body, "ct");
+                    if (iv.Length > 0 && ct.Length > 0 && Crypto.Ready)
+                    {
+                        string? pw = Crypto.DecryptPassword(nonce, iv, ct);
+                        if (pw != null) { Crypto.WriteCred(pw); Log($"APPROVED (encrypted) from {remote} -> unlocking."); }
+                        else { Log($"approve from {remote}: decrypt FAILED, using fallback."); }
+                    }
+                    else Log($"APPROVED from {remote} -> unlocking.");
                     File.WriteAllText(FlagPath, "unlock");
                     lock (Gate) _pendingNonce = null;
-                    code = 200; reply = "OK"; Log($"APPROVED from {remote} -> unlocking.");
+                    code = 200; reply = "OK";
                 }
                 else Log($"approve DENIED from {remote} (token/nonce mismatch).");
             }
