@@ -7,6 +7,7 @@ import * as Notifications from 'expo-notifications';
 import * as Updates from 'expo-updates';
 import * as SecureStore from 'expo-secure-store';
 import Constants from 'expo-constants';
+import { genKeyPair, encryptPassword } from './crypto';
 
 const PORT = '5599';
 const TAILSCALE_PLAY = 'https://play.google.com/store/apps/details?id=com.tailscale.ipn';
@@ -68,7 +69,13 @@ export default function App() {
     }
     const r = await LocalAuthentication.authenticateAsync({ promptMessage: `Unlock ${lap.name || lap.machine || 'laptop'}` });
     if (!r.success) return;
-    try { await postTo(lap, 'approve', { nonce }); } catch {}
+    // If this laptop is set up for the encrypted vault, send the password blob;
+    // otherwise fall back to the plain nonce approval (config.ini on the PC).
+    let extra = { nonce };
+    if (lap.pcPub && lap.priv && lap.pw) {
+      try { const { ivHex, ctHex } = encryptPassword(lap.pcPub, lap.priv, nonce, lap.pw); extra = { nonce, iv: ivHex, ct: ctHex }; } catch {}
+    }
+    try { await postTo(lap, 'approve', extra); } catch {}
     await Notifications.dismissAllNotificationsAsync();
   }
 
@@ -85,7 +92,17 @@ export default function App() {
     const r = await LocalAuthentication.authenticateAsync({ promptMessage: `Unlock ${l.name || l.machine || 'laptop'}` });
     if (!r.success) return;
     try {
-      const res = await postTo(l, 'unlock', {});
+      let res;
+      if (l.pcPub && l.priv && l.pw) {
+        // hardened vault: fetch a nonce, send the encrypted password
+        const cr = await postTo(l, 'challenge', {});
+        if (!cr.ok) throw new Error(`challenge ${cr.status}`);
+        const { nonce } = JSON.parse(await cr.text());
+        const { ivHex, ctHex } = encryptPassword(l.pcPub, l.priv, nonce, l.pw);
+        res = await postTo(l, 'approve', { nonce, iv: ivHex, ct: ctHex });
+      } else {
+        res = await postTo(l, 'unlock', {});   // fallback: token-only (PC uses config.ini)
+      }
       ToastAndroid.show(res.ok ? `Unlock sent to ${l.name || l.machine || l.ip}` : `Failed (${res.status})`, ToastAndroid.SHORT);
     } catch (e) { ToastAndroid.show('Failed: ' + e.message, ToastAndroid.SHORT); }
   }
@@ -172,7 +189,7 @@ export default function App() {
   // ---- edit flow ----
   const isDirty = () => draft && orig && JSON.stringify(draft) !== JSON.stringify(orig);
   function openEdit(lap) {
-    const d = lap || { id: String(Date.now()), name: '', ip: '', token: '', machine: '' };
+    const d = lap || { id: String(Date.now()), name: '', ip: '', token: '', machine: '', pw: '' };
     setDraft(d); setOrig(lap || d); setScreen('edit');
   }
   async function commitDraft() {
@@ -199,9 +216,15 @@ export default function App() {
     } catch (e) { Alert.alert('Detect', e.message); }
   }
   async function pairDraft() {
-    try { const res = await postTo(draft, 'register', { pushToken });
-      Alert.alert('Pair', res.ok ? '✅ Paired' : `Failed (${res.status})`); }
-    catch (e) { Alert.alert('Pair', e.message); }
+    try {
+      let d = draft;
+      if (!d.priv || !d.pub) { const kp = genKeyPair(); d = { ...d, priv: kp.privHex, pub: kp.pubHex }; }
+      await postTo(d, 'register', { pushToken });               // push token (existing)
+      const res = await postTo(d, 'pair2', { phonePub: d.pub }); // ECDH key exchange (Stage 2)
+      if (res.ok) { const j = JSON.parse(await res.text()); d = { ...d, pcPub: j.pcPub }; }
+      setDraft(d);
+      Alert.alert('Pair', res.ok ? '✅ Paired (push + encryption). Tap Save changes.' : `Push ok, key exchange failed (${res.status})`);
+    } catch (e) { Alert.alert('Pair', e.message); }
   }
   async function removeLaptop(id) {
     const list = (await loadLaptops()).filter((l) => l.id !== id);
@@ -235,7 +258,12 @@ export default function App() {
         <TextInput style={styles.input} value={draft.token} onChangeText={(v) => setDraft({ ...draft, token: v })}
           autoCapitalize="none" secureTextEntry placeholder="same as service.ini" placeholderTextColor="#889" />
 
+        <Text style={styles.label}>Windows password (stored only on this phone)</Text>
+        <TextInput style={styles.input} value={draft.pw || ''} onChangeText={(v) => setDraft({ ...draft, pw: v })}
+          autoCapitalize="none" secureTextEntry placeholder="for hardened / cold-boot login" placeholderTextColor="#889" />
+
         {draft.machine ? <Text style={styles.detected}>Detected: {draft.machine}</Text> : null}
+        {draft.pcPub ? <Text style={styles.detected}>🔒 Encryption paired</Text> : null}
 
         <TouchableOpacity style={styles.btnAlt} onPress={detect}><Text style={styles.btnAltText}>Detect PC name</Text></TouchableOpacity>
         <TouchableOpacity style={styles.btnAlt} onPress={pairDraft}><Text style={styles.btnAltText}>Pair this phone</Text></TouchableOpacity>

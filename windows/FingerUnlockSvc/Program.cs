@@ -222,6 +222,15 @@ static class Program
                     code = 200; reply = JsonSerializer.Serialize(new { pcPub = Crypto.PublicKeyHex() });
                 }
             }
+            else if (req.HttpMethod == "POST" && path == "/challenge")   // card-tap: fresh nonce to approve against
+            {
+                if (Field(body, "token") == _token)
+                {
+                    string nonce = Guid.NewGuid().ToString("N");
+                    lock (Gate) _pendingNonce = nonce;
+                    code = 200; reply = JsonSerializer.Serialize(new { nonce });
+                }
+            }
             else if (req.HttpMethod == "POST" && path == "/approve")
             {
                 string tok = Field(body, "token"), nonce = Field(body, "nonce");
