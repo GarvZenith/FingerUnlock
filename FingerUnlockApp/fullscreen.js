@@ -16,6 +16,9 @@ export async function ensureChannel() {
     visibility: AndroidVisibility.PUBLIC,
     sound: 'default',
     vibration: true,
+    vibrationPattern: [300, 500, 300, 500],
+    lights: true,
+    lightColor: '#3b6ef5',
   });
 }
 
@@ -48,8 +51,21 @@ export async function showCall(data) {
       category: AndroidCategory.CALL,
       fullScreenAction: { id: 'default', launchActivity: 'default' },
       pressAction: { id: 'default', launchActivity: 'default' },
+      asForegroundService: true,
       autoCancel: true,
       timeoutAfter: 45000,
+      showTimestamp: true,
+      color: '#3b6ef5',
+      actions: [
+        {
+          title: '☝ Unlock',
+          pressAction: { id: 'yes', launchActivity: 'default' },
+        },
+        {
+          title: '✕ Decline',
+          pressAction: { id: 'no' },
+        },
+      ],
     },
   });
 }

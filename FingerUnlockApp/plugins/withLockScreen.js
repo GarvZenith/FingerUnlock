@@ -12,6 +12,10 @@ module.exports = function withLockScreen(config) {
     if (main) {
       main['$']['android:showWhenLocked'] = 'true';
       main['$']['android:turnScreenOn'] = 'true';
+      main['$']['android:showForAllUsers'] = 'true';
+      main['$']['android:inheritShowWhenLocked'] = 'true';
+      main['$']['android:launchMode'] = 'singleTop';
+      main['$']['android:exported'] = 'true';
 
       // 1. Hide from Launcher / App Drawer by removing LAUNCHER category
       if (main['intent-filter']) {
