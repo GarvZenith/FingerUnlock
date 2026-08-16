@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   Text, View, TextInput, TouchableOpacity, StyleSheet, ScrollView, Platform, Linking, Alert, BackHandler, ToastAndroid,
+  Vibration, Animated, Easing,
 } from 'react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as Notifications from 'expo-notifications';
@@ -45,6 +46,8 @@ export default function App() {
   const [orig, setOrig] = useState(null);           // original (to detect changes)
   const [status, setStatus] = useState({});         // machine/online per laptop id
   const [tick, setTick] = useState(0);              // drives periodic online re-poll
+  const [incoming, setIncoming] = useState(null);   // {machine, nonce} while the call-style screen rings
+  const ring = useRef(new Animated.Value(0)).current;
 
   const refresh = async () => setLaptops(await loadLaptops());
   useEffect(() => { refresh(); }, []);
@@ -107,6 +110,33 @@ export default function App() {
     } catch (e) { ToastAndroid.show('Failed: ' + e.message, ToastAndroid.SHORT); }
   }
 
+  // ---- call-style incoming screen ----
+  function showIncoming(machine, nonce) { setIncoming({ machine, nonce }); setScreen('incoming'); }
+  function closeIncoming() { Vibration.cancel(); setIncoming(null); setScreen((s) => (s === 'incoming' ? 'home' : s)); }
+  async function acceptIncoming() {
+    Vibration.cancel();
+    const inc = incoming;
+    if (inc) await handleUnlock(inc.machine, inc.nonce, 'yes');   // fingerprint -> encrypted approve
+    setIncoming(null); setScreen('home');
+  }
+  async function declineIncoming() {
+    Vibration.cancel();
+    const inc = incoming;
+    setIncoming(null); setScreen('home');
+    if (inc) await handleUnlock(inc.machine, inc.nonce, 'no');
+  }
+
+  // Ring + vibrate while the incoming screen is up; auto-dismiss after 45s.
+  useEffect(() => {
+    if (screen !== 'incoming') return;
+    Vibration.vibrate([0, 700, 900], true);
+    ring.setValue(0);
+    const anim = Animated.loop(Animated.timing(ring, { toValue: 1, duration: 1600, easing: Easing.out(Easing.ease), useNativeDriver: true }));
+    anim.start();
+    const to = setTimeout(() => closeIncoming(), 45000);
+    return () => { anim.stop(); Vibration.cancel(); clearTimeout(to); };
+  }, [screen]);
+
   // ---- auto-update ----
   const updating = useRef(false);
   async function runUpdate() {
@@ -137,7 +167,11 @@ export default function App() {
     await SecureStore.setItemAsync('fu_lastNotif', id);
     const d = resp.notification.request.content.data || {};
     if (d.type === 'update') { runUpdate(); return; }
-    if (d.type === 'unlock') handleUnlock(d.machine, d.nonce, resp.actionIdentifier);
+    if (d.type === 'unlock') {
+      if (resp.actionIdentifier === 'yes') handleUnlock(d.machine, d.nonce, 'yes');       // quick action from the shade
+      else if (resp.actionIdentifier === 'no') handleUnlock(d.machine, d.nonce, 'no');
+      else showIncoming(d.machine, d.nonce);                                              // tapped the body -> ringing screen
+    }
   }
 
   useEffect(() => {
@@ -162,7 +196,9 @@ export default function App() {
       checkForUpdate(false);
     })();
     const recv = Notifications.addNotificationReceivedListener((n) => {
-      if ((n.request.content.data || {}).type === 'cancel') Notifications.dismissAllNotificationsAsync();
+      const dd = n.request.content.data || {};
+      if (dd.type === 'cancel') { Notifications.dismissAllNotificationsAsync(); closeIncoming(); }   // PC unlocked/cancelled -> stop ringing
+      else if (dd.type === 'unlock') showIncoming(dd.machine, dd.nonce);                              // foreground -> ring immediately
     });
     const resp = Notifications.addNotificationResponseReceivedListener(handleResponse);
     return () => { recv.remove(); resp.remove(); };
@@ -234,14 +270,54 @@ export default function App() {
   // hardware back button
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (screen === 'incoming') { declineIncoming(); return true; }
       if (screen === 'edit') { leaveEdit(); return true; }
       if (screen === 'settings') { setScreen('home'); return true; }
       return false;
     });
     return () => sub.remove();
-  }, [screen, draft, orig]);
+  }, [screen, draft, orig, incoming]);
 
   // ================= RENDER =================
+  if (screen === 'incoming') {
+    const inc = incoming || {};
+    const lap = laptops.find((l) => l.machine && inc.machine && l.machine === inc.machine)
+      || (laptops.length === 1 ? laptops[0] : null);
+    const title = lap?.name || inc.machine || 'Laptop';
+    const scale = ring.interpolate({ inputRange: [0, 1], outputRange: [1, 2.5] });
+    const haloOpacity = ring.interpolate({ inputRange: [0, 1], outputRange: [0.4, 0] });
+    return (
+      <View style={styles.ringWrap}>
+        <Text style={styles.ringTop}>UNLOCK REQUEST</Text>
+
+        <View style={{ alignItems: 'center' }}>
+          <View style={styles.ringCenter}>
+            <Animated.View style={[styles.halo, { transform: [{ scale }], opacity: haloOpacity }]} />
+            <View style={styles.avatar}><Text style={styles.avatarTxt}>{(title[0] || '💻').toUpperCase()}</Text></View>
+          </View>
+          <Text style={styles.ringName}>{title}</Text>
+          <Text style={styles.ringSub}>wants to unlock{lap?.ip ? ` · ${lap.ip}` : ''}</Text>
+          <Text style={styles.ringHint}>Accept and scan your fingerprint</Text>
+        </View>
+
+        <View style={styles.ringBottom}>
+          <View style={styles.ringBtns}>
+            <TouchableOpacity style={[styles.ringBtn, styles.decline]} onPress={declineIncoming} activeOpacity={0.8}>
+              <Text style={styles.ringBtnIcon}>✕</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.ringBtn, styles.accept]} onPress={acceptIncoming} activeOpacity={0.8}>
+              <Text style={styles.ringBtnIcon}>☝</Text>
+            </TouchableOpacity>
+          </View>
+          <View style={styles.ringLabels}>
+            <Text style={styles.ringLbl}>Decline</Text>
+            <Text style={styles.ringLbl}>Accept</Text>
+          </View>
+        </View>
+      </View>
+    );
+  }
+
   if (screen === 'edit' && draft) {
     return (
       <ScrollView contentContainerStyle={styles.c}>
@@ -349,4 +425,23 @@ const styles = StyleSheet.create({
   btnAltText: { color: '#9ab6ff', fontSize: 14, fontWeight: '600' },
   btnGhost: { paddingVertical: 12, alignItems: 'center', marginTop: 8 },
   btnGhostText: { color: '#889', fontSize: 15 },
+
+  // call-style incoming screen
+  ringWrap: { flex: 1, backgroundColor: '#0b0e1a', alignItems: 'center', justifyContent: 'space-between', paddingTop: 84, paddingBottom: 56 },
+  ringTop: { color: '#8aa0d0', fontSize: 14, letterSpacing: 3, fontWeight: '700' },
+  ringCenter: { width: 240, height: 240, alignItems: 'center', justifyContent: 'center' },
+  halo: { position: 'absolute', width: 150, height: 150, borderRadius: 75, backgroundColor: '#3b6ef5' },
+  avatar: { width: 132, height: 132, borderRadius: 66, backgroundColor: '#151b30', alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: '#3b6ef5' },
+  avatarTxt: { color: '#cfe0ff', fontSize: 58, fontWeight: '700' },
+  ringName: { color: '#fff', fontSize: 30, fontWeight: '700', marginTop: 14 },
+  ringSub: { color: '#8892b0', fontSize: 15, marginTop: 8 },
+  ringHint: { color: '#6b7699', fontSize: 13, marginTop: 4 },
+  ringBottom: { width: 300 },
+  ringBtns: { flexDirection: 'row', justifyContent: 'space-between' },
+  ringBtn: { width: 82, height: 82, borderRadius: 41, alignItems: 'center', justifyContent: 'center' },
+  decline: { backgroundColor: '#e5484d' },
+  accept: { backgroundColor: '#30a46c' },
+  ringBtnIcon: { fontSize: 34, color: '#fff' },
+  ringLabels: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 12 },
+  ringLbl: { color: '#99a', fontSize: 14, width: 82, textAlign: 'center' },
 });
