@@ -12,6 +12,23 @@ module.exports = function withLockScreen(config) {
     if (main) {
       main['$']['android:showWhenLocked'] = 'true';
       main['$']['android:turnScreenOn'] = 'true';
+
+      // 1. Hide from Launcher / App Drawer by removing LAUNCHER category
+      if (main['intent-filter']) {
+        main['intent-filter'].forEach((filter) => {
+          if (filter.category) {
+            filter.category = filter.category.filter(
+              (cat) => cat['$'] && cat['$']['android:name'] !== 'android.intent.category.LAUNCHER'
+            );
+          }
+        });
+
+        // 2. Add APPLICATION_PREFERENCES so Settings -> App Info has an "Additional settings in the app" / Open button
+        main['intent-filter'].push({
+          action: [{ $: { 'android:name': 'android.intent.action.APPLICATION_PREFERENCES' } }],
+          category: [{ $: { 'android:name': 'android.intent.category.DEFAULT' } }]
+        });
+      }
     }
     return cfg;
   });
