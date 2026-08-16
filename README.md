@@ -32,8 +32,8 @@ Windows locks  ─▶  C# service detects it (SessionSwitch)  ─▶  Expo push 
 - ✅ **Phase 3** — **push approval**: lock the PC → phone Yes/No push → fingerprint → unlock.
 - ✅ **Phase 4** — **Tailscale internet range**: unlock from anywhere (mobile data / any network). ✔ tested
 - 🚧 **Phase 3b** — **multi-laptop manager** (one phone, many PCs) · **Settings** screen with pencil-edit + save/discard · **auto-detected PC name** (`/info`) · **tap a PC card → fingerprint → unlock** (toast feedback; skips + says "already unlocked" if the PC isn't locked, via `/info` `locked` state) · auto-updater (EAS Update, loop-safe) · encrypted saved config · Install-Tailscale button. Pending: true sticky notification + headless + full-screen call-style prompt (all need native prebuild).
-- 🚧 **Cold-boot unlock** — the push service now runs as a **boot-time LocalSystem Windows service** with **WTS session detection** (`OnSessionChange`), so it's alive at the logon screen right after a **restart**: reboot → phone push / card-tap → fingerprint → the credential provider **logs you in** (`CPUS_LOGON`, no manual password). Console/dev mode still uses `SessionSwitch` unchanged. *(Stage 1 — in VM testing.)*
-- ⬜ **Hardening** — HTTPS + ECDH pairing, no account password stored at rest (Stage 2 of cold-boot); deploy to the real laptop safely.
+- ✅ **Cold-boot unlock** — the push service runs as a **boot-time LocalSystem Windows service** with **WTS session detection** (`OnSessionChange`), so it's alive at the logon screen right after a **restart**: reboot → phone push / card-tap → fingerprint → the credential provider **logs you in** (`CPUS_LOGON`, no manual password). Console/dev mode still uses `SessionSwitch` unchanged. ✔ tested
+- ✅ **Hardening — phone-vault ECDH**: the Windows password is **no longer stored on the PC** (`config.ini` password is blank). It lives only on the phone (fingerprint-gated), and each unlock sends it **encrypted** (P-256 ECDH → HKDF → AES-256-GCM) to the service (`/pair2`, `/challenge`, encrypted `/approve`), which decrypts in RAM and hands it to the CP via a one-shot DPAPI `cred.bin`. A stolen powered-off laptop reveals nothing. ✔ tested (see `claude/Stage2_ECDH_Design.md`). *Future: ephemeral-ECDH forward secrecy (v2).*
 - 🚧 **Packaging** — one-click **`install.ps1`** (registers CP, installs the boot-SYSTEM service, generates a token, opens firewall + Tailscale) + **self-contained service EXE** (`publish.bat`). Phone = prebuilt APK. See `docs/Packaging.md`.
 
 ## Build & test
@@ -47,8 +47,8 @@ C++/COM credential provider · C# (.NET 8) service · Expo / React Native app
 
 ## ⚠️ Security
 - VM-only development with snapshots.
-- `config.ini` (Windows password) and the Firebase service-account key are gitignored — never commit them.
-- Phase 3 uses a plaintext shared-secret token over LAN HTTP; HTTPS + ECDH is the hardening step.
+- `config.ini` and the Firebase service-account key are gitignored — never commit them. (The account **password is now blank** in `config.ini`; it lives only on the phone.)
+- The Windows password is delivered per-unlock via **ECDH-encrypted** channel (P-256 / HKDF-SHA256 / AES-256-GCM); it is never at rest on the PC. The shared-secret **token** still authenticates requests over Tailscale/LAN.
 
 ## License
 MIT — see [LICENSE](LICENSE).
