@@ -2,6 +2,7 @@
   "expo": {
     "name": "FingerUnlock",
     "slug": "fingerprint",
+    "scheme": "fingerunlock",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
@@ -13,13 +14,7 @@
         "USE_BIOMETRIC",
         "USE_FINGERPRINT",
         "POST_NOTIFICATIONS",
-        "android.permission.USE_BIOMETRIC",
-        "android.permission.USE_FINGERPRINT",
-        "USE_BIOMETRIC",
-        "USE_FINGERPRINT",
-        "POST_NOTIFICATIONS",
-        "android.permission.USE_BIOMETRIC",
-        "android.permission.USE_FINGERPRINT"
+        "USE_FULL_SCREEN_INTENT"
       ]
     },
     "ios": {
@@ -28,6 +23,8 @@
     "plugins": [
       "expo-local-authentication",
       "expo-notifications",
+      "@react-native-firebase/app",
+      "./plugins/withLockScreen",
       [
         "expo-build-properties",
         {
@@ -36,18 +33,12 @@
           }
         }
       ],
-      "expo-secure-store"
+      "@react-native-firebase/messaging"
     ],
     "extra": {
       "eas": {
         "projectId": "484d0eaa-5ea4-41f1-a361-0dbe33067fc4"
       }
-    },
-    "runtimeVersion": {
-      "policy": "appVersion"
-    },
-    "updates": {
-      "url": "https://u.expo.dev/484d0eaa-5ea4-41f1-a361-0dbe33067fc4"
     }
   }
 }

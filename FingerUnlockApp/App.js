@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, Component } from 'react';
 import {
   Text, View, TextInput, TouchableOpacity, StyleSheet, ScrollView, Platform, Linking, Alert, BackHandler, ToastAndroid,
   Vibration, Animated, Easing,
@@ -8,16 +8,23 @@ import * as Notifications from 'expo-notifications';
 import * as Updates from 'expo-updates';
 import * as SecureStore from 'expo-secure-store';
 import Constants from 'expo-constants';
+import messaging from '@react-native-firebase/messaging';
+import notifee, { EventType } from '@notifee/react-native';
 import { genKeyPair, encryptPassword } from './crypto';
+import { showStickyNotification } from './fullscreen';
 
 const PORT = '5599';
 const TAILSCALE_PLAY = 'https://play.google.com/store/apps/details?id=com.tailscale.ipn';
 
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowBanner: true, shouldShowList: true, shouldPlaySound: true, shouldSetBadge: false,
-  }),
-});
+try {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowBanner: true, shouldShowList: true, shouldPlaySound: true, shouldSetBadge: false,
+    }),
+  });
+} catch (e) {
+  console.log('Notification handler set error:', e);
+}
 
 // ---- storage (module-level so the cold-start handler can use it) ----
 async function loadLaptops() {
@@ -38,7 +45,7 @@ async function postTo(l, path, extra, timeoutMs = 6000) {
   } finally { clearTimeout(t); }
 }
 
-export default function App() {
+function App() {
   const [screen, setScreen] = useState('home');    // home | settings | edit
   const [laptops, setLaptops] = useState([]);
   const [pushToken, setPushToken] = useState('');
@@ -48,6 +55,7 @@ export default function App() {
   const [tick, setTick] = useState(0);              // drives periodic online re-poll
   const [incoming, setIncoming] = useState(null);   // {machine, nonce} while the call-style screen rings
   const ring = useRef(new Animated.Value(0)).current;
+  const fcmRef = useRef('');                          // FCM device token (native full-screen path)
 
   const refresh = async () => setLaptops(await loadLaptops());
   useEffect(() => { refresh(); }, []);
@@ -111,19 +119,31 @@ export default function App() {
   }
 
   // ---- call-style incoming screen ----
+  function dropCall() { Vibration.cancel(); try { notifee.cancelAllNotifications(); } catch {} }
   function showIncoming(machine, nonce) { setIncoming({ machine, nonce }); setScreen('incoming'); }
-  function closeIncoming() { Vibration.cancel(); setIncoming(null); setScreen((s) => (s === 'incoming' ? 'home' : s)); }
+  function closeIncoming() { dropCall(); setIncoming(null); setScreen((s) => (s === 'incoming' ? 'home' : s)); }
   async function acceptIncoming() {
-    Vibration.cancel();
+    dropCall();
     const inc = incoming;
     if (inc) await handleUnlock(inc.machine, inc.nonce, 'yes');   // fingerprint -> encrypted approve
     setIncoming(null); setScreen('home');
   }
   async function declineIncoming() {
-    Vibration.cancel();
+    dropCall();
     const inc = incoming;
     setIncoming(null); setScreen('home');
     if (inc) await handleUnlock(inc.machine, inc.nonce, 'no');
+  }
+
+  // Register this phone's FCM token with every paired laptop (native full-screen path).
+  async function registerFcmAll(list) {
+    try {
+      const tok = fcmRef.current || (await messaging().getToken());
+      fcmRef.current = tok;
+      for (const l of (list || (await loadLaptops()))) {
+        try { await postTo(l, 'registerfcm', { fcmToken: tok }); } catch {}
+      }
+    } catch {}
   }
 
   // Ring + vibrate while the incoming screen is up; auto-dismiss after 45s.
@@ -204,6 +224,53 @@ export default function App() {
     return () => { recv.remove(); resp.remove(); };
   }, []);
 
+  // ---- FCM + Notifee (native full-screen "call") ----
+  useEffect(() => {
+    let unMsg, unFg, unTok;
+    (async () => {
+      try {
+        try { await messaging().requestPermission(); } catch {}
+        await registerFcmAll();
+        // Phase 3b: start the sticky foreground service so the process stays
+        // alive in the background and FCM messages arrive instantly.
+        await showStickyNotification();
+        // launched by tapping the full-screen unlock notification?
+        try {
+          const initial = await notifee.getInitialNotification();
+          const d = initial?.notification?.data;
+          if (d && d.type === 'unlock') showIncoming(d.machine, d.nonce);
+        } catch {}
+
+        // foreground FCM data message -> ring in-app
+        try {
+          unMsg = messaging().onMessage(async (m) => {
+            const d = m.data || {};
+            if (d.type === 'cancel') closeIncoming();
+            else if (d.type === 'unlock') showIncoming(d.machine, d.nonce);
+          });
+        } catch (e) { console.log('FCM onMessage listener error:', e); }
+
+        // tapping the full-screen notification while the app is alive
+        try {
+          unFg = notifee.onForegroundEvent(({ type, detail }) => {
+            if (type === EventType.PRESS) {
+              const d = detail.notification?.data;
+              if (d && d.type === 'unlock') showIncoming(d.machine, d.nonce);
+            }
+          });
+        } catch (e) { console.log('Notifee onForegroundEvent listener error:', e); }
+
+        // FCM token can rotate — re-register when it does
+        try {
+          unTok = messaging().onTokenRefresh((t) => { fcmRef.current = t; registerFcmAll(); });
+        } catch (e) { console.log('FCM onTokenRefresh listener error:', e); }
+      } catch (e) {
+        console.log('FCM/Notifee init error:', e);
+      }
+    })();
+    return () => { try { unMsg && unMsg(); } catch {} try { unFg && unFg(); } catch {} try { unTok && unTok(); } catch {} };
+  }, []);
+
   // ---- ping each laptop for name + online status (homepage) ----
   useEffect(() => {
     let alive = true;
@@ -255,7 +322,8 @@ export default function App() {
     try {
       let d = draft;
       if (!d.priv || !d.pub) { const kp = genKeyPair(); d = { ...d, priv: kp.privHex, pub: kp.pubHex }; }
-      await postTo(d, 'register', { pushToken });               // push token (existing)
+      await postTo(d, 'register', { pushToken });               // Expo push token (fallback path)
+      try { const ft = fcmRef.current || (await messaging().getToken()); fcmRef.current = ft; await postTo(d, 'registerfcm', { fcmToken: ft }); } catch {}   // FCM token (full-screen path)
       const res = await postTo(d, 'pair2', { phonePub: d.pub }); // ECDH key exchange (Stage 2)
       if (res.ok) { const j = JSON.parse(await res.text()); d = { ...d, pcPub: j.pcPub }; }
       setDraft(d);
@@ -445,3 +513,39 @@ const styles = StyleSheet.create({
   ringLabels: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 12 },
   ringLbl: { color: '#99a', fontSize: 14, width: 82, textAlign: 'center' },
 });
+
+class ErrorBoundary extends Component {
+  state = { hasError: false, error: null };
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, errorInfo) {
+    console.log('App Error:', error, errorInfo);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <View style={{ flex: 1, backgroundColor: '#0f1220', padding: 24, justifyContent: 'center', alignItems: 'center' }}>
+          <Text style={{ color: '#ff6b6b', fontSize: 22, fontWeight: '700', marginBottom: 12 }}>FingerUnlock Error</Text>
+          <Text style={{ color: '#aab', fontSize: 14, textAlign: 'center', marginBottom: 20 }}>
+            {this.state.error?.toString() || 'An error occurred during app startup.'}
+          </Text>
+          <TouchableOpacity
+            style={{ backgroundColor: '#3b6ef5', paddingHorizontal: 20, paddingVertical: 12, borderRadius: 10 }}
+            onPress={() => this.setState({ hasError: false, error: null })}>
+            <Text style={{ color: '#fff', fontWeight: '700' }}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+export default function AppWrapper() {
+  return (
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  );
+}
