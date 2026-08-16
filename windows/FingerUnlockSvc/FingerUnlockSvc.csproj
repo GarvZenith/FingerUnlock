@@ -15,6 +15,8 @@
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.0" />
     <!-- DPAPI (ProtectedData) for the PC private key + cred handoff (Stage 2 ECDH) -->
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+    <!-- FCM v1 data messages for the native full-screen "call" prompt (Step B) -->
+    <PackageReference Include="FirebaseAdmin" Version="3.1.0" />
   </ItemGroup>
 
 </Project>

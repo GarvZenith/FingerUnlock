@@ -4,6 +4,9 @@ using System.ServiceProcess;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Win32;
+using FirebaseAdmin;
+using FirebaseAdmin.Messaging;
+using Google.Apis.Auth.OAuth2;
 
 // FingerUnlock push service.
 // Runs two ways from the same exe:
@@ -23,6 +26,7 @@ static class Program
     const string FlagPath   = Dir + @"\unlock.flag";
     const string ConfigPath = Dir + @"\service.ini";
     const string LogPath    = Dir + @"\service.log";
+    const string SaPath     = Dir + @"\serviceAccount.json";   // Firebase service-account key (gitignored)
     const string ExpoPush   = "https://exp.host/--/api/v2/push/send";
 
     static readonly HttpClient Http = new();
@@ -35,7 +39,9 @@ static class Program
 
     static int    _port = 5599;
     static string _token = "changeme";
-    static string _pushToken = "";
+    static string _pushToken = "";        // Expo push token (legacy path)
+    static string _fcmToken = "";         // FCM device token (native full-screen path, Step B)
+    static bool   _fcmReady = false;      // Firebase Admin initialised?
 
     static void Main(string[] args)
     {
@@ -53,6 +59,7 @@ static class Program
     {
         LoadConfig();
         Crypto.Load();
+        InitFirebase();
         SystemEvents.SessionSwitch += (_, e) =>
         {
             if (e.Reason == SessionSwitchReason.SessionLock)        OnLocked(false);
@@ -77,6 +84,7 @@ static class Program
         {
             LoadConfig();
             Crypto.Load();
+            InitFirebase();
             StartHttp();
             // At boot we sit at the logon screen with no interactive user -> treat
             // as locked and ring the phone ONCE (retry while the network comes up).
@@ -148,9 +156,47 @@ static class Program
         if (had && !_shuttingDown) { SendPush(false, ""); Log("UNLOCKED -> cancel push."); }
     }
 
-    // Returns true on a 2xx from Expo.
+    // Load Firebase Admin (for FCM v1) if the service-account key is present.
+    static void InitFirebase()
+    {
+        try
+        {
+            if (!File.Exists(SaPath)) { Log($"FCM off: {SaPath} not found (using Expo push)."); return; }
+            if (FirebaseApp.DefaultInstance == null)
+                FirebaseApp.Create(new AppOptions { Credential = GoogleCredential.FromFile(SaPath) });
+            _fcmReady = true;
+            Log("Firebase (FCM v1) ready.");
+        }
+        catch (Exception ex) { Log("firebase init: " + ex.Message); }
+    }
+
+    // Native full-screen path: send a data-only FCM message the app handles in the
+    // background/killed to raise the full-screen call. Returns true on success.
+    static bool SendFcm(bool unlock, string nonce)
+    {
+        try
+        {
+            var data = unlock
+                ? new Dictionary<string, string> { { "type", "unlock" }, { "nonce", nonce }, { "machine", Environment.MachineName } }
+                : new Dictionary<string, string> { { "type", "cancel" } };
+            var msg = new Message
+            {
+                Token = _fcmToken,
+                Data = data,
+                Android = new AndroidConfig { Priority = Priority.High },
+            };
+            string id = FirebaseMessaging.DefaultInstance.SendAsync(msg).GetAwaiter().GetResult();
+            Log($"FCM sent ({id[^8..]}).");
+            return true;
+        }
+        catch (Exception ex) { Log("fcm: " + ex.Message); return false; }
+    }
+
+    // Returns true on success. Prefers the native FCM path (full-screen) when the
+    // phone has registered an FCM token; otherwise falls back to Expo push.
     static bool SendPush(bool unlock, string nonce)
     {
+        if (_fcmToken.Length > 0 && _fcmReady) return SendFcm(unlock, nonce);
         if (_pushToken.Length == 0) { Log("No phone push token (pushtoken= in service.ini)."); return false; }
         object msg = unlock
             ? new {
@@ -206,7 +252,16 @@ static class Program
             if (req.HttpMethod == "POST" && path == "/register")
             {
                 string pt = Field(body, "pushToken");
-                if (pt.Length > 0) { _pushToken = pt; SavePushToken(pt); code = 200; reply = "REGISTERED"; Log($"Paired phone push token from {remote}."); }
+                if (pt.Length > 0) { _pushToken = pt; SaveKV("pushtoken", pt); code = 200; reply = "REGISTERED"; Log($"Paired phone push token from {remote}."); }
+            }
+            else if (req.HttpMethod == "POST" && path == "/registerfcm")   // native full-screen path (Step B)
+            {
+                if (Field(body, "token") == _token)
+                {
+                    string ft = Field(body, "fcmToken");
+                    if (ft.Length > 0) { _fcmToken = ft; SaveKV("fcmtoken", ft); Log($"Paired FCM token from {remote}."); }
+                    code = 200; reply = JsonSerializer.Serialize(new { fcm = _fcmReady });
+                }
             }
             else if (req.HttpMethod == "POST" && path == "/info")   // auto-detect PC name + lock state
             {
@@ -297,18 +352,19 @@ static class Program
         {
             var l = raw.Trim();
             if (l.StartsWith("port="))           int.TryParse(l[5..].Trim(), out _port);
+            else if (l.StartsWith("fcmtoken="))  _fcmToken = l[9..].Trim();
             else if (l.StartsWith("token="))     _token = l[6..].Trim();
             else if (l.StartsWith("pushtoken=")) _pushToken = l[10..].Trim();
         }
     }
 
-    static void SavePushToken(string pt)
+    static void SaveKV(string key, string val)
     {
         try
         {
             var lines = File.Exists(ConfigPath) ? new List<string>(File.ReadAllLines(ConfigPath)) : new();
-            int i = lines.FindIndex(x => x.TrimStart().StartsWith("pushtoken="));
-            if (i >= 0) lines[i] = "pushtoken=" + pt; else lines.Add("pushtoken=" + pt);
+            int i = lines.FindIndex(x => x.TrimStart().StartsWith(key + "="));
+            if (i >= 0) lines[i] = key + "=" + val; else lines.Add(key + "=" + val);
             File.WriteAllLines(ConfigPath, lines);
         }
         catch (Exception ex) { Log("save: " + ex.Message); }
