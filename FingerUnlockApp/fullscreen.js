@@ -46,7 +46,7 @@ export async function showCall(data) {
       channelId: 'unlock',
       importance: AndroidImportance.HIGH,
       category: AndroidCategory.CALL,
-      fullScreenAction: { id: 'default' },              // shows over the lock screen
+      fullScreenAction: { id: 'default', launchActivity: 'default' },
       pressAction: { id: 'default', launchActivity: 'default' },
       autoCancel: true,
       timeoutAfter: 45000,

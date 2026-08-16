@@ -181,11 +181,7 @@ function App() {
 
   async function handleResponse(resp) {
     if (!resp) return;
-    const id = resp.notification.request.identifier;
-    const last = await SecureStore.getItemAsync('fu_lastNotif');
-    if (last === id) return;
-    await SecureStore.setItemAsync('fu_lastNotif', id);
-    const d = resp.notification.request.content.data || {};
+    const d = resp.notification?.request?.content?.data || {};
     if (d.type === 'update') { runUpdate(); return; }
     if (d.type === 'unlock') {
       if (resp.actionIdentifier === 'yes') handleUnlock(d.machine, d.nonce, 'yes');       // quick action from the shade
@@ -206,7 +202,7 @@ function App() {
       ]);
       if (Platform.OS === 'android') {
         await Notifications.setNotificationChannelAsync('unlock', {
-          name: 'Unlock requests', importance: Notifications.AndroidImportance.MAX, sound: 'default' });
+          name: 'Unlock requests', importance: Notifications.AndroidImportance.MAX, sound: 'default', vibrationPattern: [0, 500, 500, 500] });
       }
       try {
         const projectId = Constants?.expoConfig?.extra?.eas?.projectId ?? Constants?.easConfig?.projectId;
@@ -215,10 +211,13 @@ function App() {
       handleResponse(await Notifications.getLastNotificationResponseAsync());   // cold-start tap
       checkForUpdate(false);
     })();
-    const recv = Notifications.addNotificationReceivedListener((n) => {
-      const dd = n.request.content.data || {};
+    const recv = Notifications.addNotificationReceivedListener(async (n) => {
+      const dd = n.request?.content?.data || {};
       if (dd.type === 'cancel') { Notifications.dismissAllNotificationsAsync(); closeIncoming(); }   // PC unlocked/cancelled -> stop ringing
-      else if (dd.type === 'unlock') showIncoming(dd.machine, dd.nonce);                              // foreground -> ring immediately
+      else if (dd.type === 'unlock') {
+        showIncoming(dd.machine, dd.nonce);                                                           // foreground -> ring immediately
+        try { await showCall(dd); } catch {}
+      }
     });
     const resp = Notifications.addNotificationResponseReceivedListener(handleResponse);
     return () => { recv.remove(); resp.remove(); };
@@ -253,7 +252,7 @@ function App() {
         // tapping the full-screen notification while the app is alive
         try {
           unFg = notifee.onForegroundEvent(({ type, detail }) => {
-            if (type === EventType.PRESS) {
+            if (type === EventType.PRESS || type === EventType.ACTION_PRESS) {
               const d = detail.notification?.data;
               if (d && d.type === 'unlock') showIncoming(d.machine, d.nonce);
             }
