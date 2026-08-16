@@ -181,12 +181,19 @@ function App() {
 
   async function handleResponse(resp) {
     if (!resp) return;
-    const d = resp.notification?.request?.content?.data || {};
-    if (d.type === 'update') { runUpdate(); return; }
-    if (d.type === 'unlock') {
-      if (resp.actionIdentifier === 'yes') handleUnlock(d.machine, d.nonce, 'yes');       // quick action from the shade
-      else if (resp.actionIdentifier === 'no') handleUnlock(d.machine, d.nonce, 'no');
-      else showIncoming(d.machine, d.nonce);                                              // tapped the body -> ringing screen
+    const content = resp.notification?.request?.content;
+    let d = content?.data || {};
+    if (typeof d === 'string') {
+      try { d = JSON.parse(d); } catch {}
+    }
+    const machine = d.machine || 'PC';
+    const nonce = d.nonce || '';
+    if (resp.actionIdentifier === 'yes') {
+      await handleUnlock(machine, nonce, 'yes');
+    } else if (resp.actionIdentifier === 'no') {
+      await handleUnlock(machine, nonce, 'no');
+    } else {
+      showIncoming(machine, nonce);
     }
   }
 
