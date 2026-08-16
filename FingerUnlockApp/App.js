@@ -202,7 +202,23 @@ function App() {
       ]);
       if (Platform.OS === 'android') {
         await Notifications.setNotificationChannelAsync('unlock', {
-          name: 'Unlock requests', importance: Notifications.AndroidImportance.MAX, sound: 'default', vibrationPattern: [0, 500, 500, 500] });
+          name: 'Unlock requests',
+          importance: Notifications.AndroidImportance.MAX,
+          sound: 'default',
+          vibrationPattern: [0, 500, 500, 500],
+          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+          bypassDnd: true,
+          showBadge: true,
+        });
+        await Notifications.setNotificationChannelAsync('unlock_call_v3', {
+          name: 'Incoming Unlock Calls',
+          importance: Notifications.AndroidImportance.MAX,
+          sound: 'default',
+          vibrationPattern: [0, 500, 500, 500],
+          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+          bypassDnd: true,
+          showBadge: true,
+        });
       }
       try {
         const projectId = Constants?.expoConfig?.extra?.eas?.projectId ?? Constants?.easConfig?.projectId;

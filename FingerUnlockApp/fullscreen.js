@@ -7,11 +7,11 @@
 // the app alive in the background so FCM messages are received instantly.
 import notifee, { AndroidImportance, AndroidVisibility, AndroidCategory } from '@notifee/react-native';
 
-// ---- Unlock channel (high-importance, sound + vibration) ----
+// ---- Unlock channel (high-importance, sound + vibration + bypass DND) ----
 export async function ensureChannel() {
   return notifee.createChannel({
-    id: 'unlock',
-    name: 'Unlock requests',
+    id: 'unlock_call_v3',
+    name: 'Incoming Unlock Calls',
     importance: AndroidImportance.HIGH,
     visibility: AndroidVisibility.PUBLIC,
     sound: 'default',
@@ -19,13 +19,14 @@ export async function ensureChannel() {
     vibrationPattern: [300, 500, 300, 500],
     lights: true,
     lightColor: '#3b6ef5',
+    bypassDnd: true,
   });
 }
 
 // ---- Service channel (low-importance, silent — for the sticky notification) ----
 export async function ensureServiceChannel() {
   return notifee.createChannel({
-    id: 'service',
+    id: 'service_v3',
     name: 'Background service',
     importance: AndroidImportance.LOW,
     visibility: AndroidVisibility.PUBLIC,
@@ -41,12 +42,12 @@ export async function showCall(data) {
   if (data.type !== 'unlock') return;
   await ensureChannel();
   await notifee.displayNotification({
-    id: 'unlock',
+    id: 'unlock_incoming',
     title: `Unlock ${data.machine || 'PC'}?`,
     body: 'Tap to approve with your fingerprint',
     data,
     android: {
-      channelId: 'unlock',
+      channelId: 'unlock_call_v3',
       importance: AndroidImportance.HIGH,
       category: AndroidCategory.CALL,
       fullScreenAction: { id: 'default', launchActivity: 'default' },

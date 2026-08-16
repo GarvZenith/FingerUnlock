@@ -203,10 +203,10 @@ static class Program
                 to = _pushToken,
                 title = $"Unlock {Environment.MachineName}?",
                 body = "Approve with your fingerprint",
-                priority = "high", sound = "default", categoryId = "unlock", channelId = "unlock",
+                priority = "high", sound = "default", categoryId = "unlock", channelId = "unlock_call_v3",
                 data = new { type = "unlock", nonce, machine = Environment.MachineName }
               }
-            : new { to = _pushToken, priority = "high", data = new { type = "cancel" } };
+            : new { to = _pushToken, priority = "high", channelId = "unlock_call_v3", data = new { type = "cancel" } };
         try
         {
             var content = new StringContent(JsonSerializer.Serialize(msg), Encoding.UTF8, "application/json");
