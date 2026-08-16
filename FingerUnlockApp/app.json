@@ -19,8 +19,7 @@
         "WAKE_LOCK",
         "DISABLE_KEYGUARD",
         "VIBRATE",
-        "FOREGROUND_SERVICE",
-        "FOREGROUND_SERVICE_PHONE_CALL"
+        "FOREGROUND_SERVICE"
       ]
     },
     "ios": {

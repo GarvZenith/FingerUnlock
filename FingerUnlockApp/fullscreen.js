@@ -84,12 +84,11 @@ export async function showStickyNotification() {
       title: 'FingerUnlock active',
       body: 'Listening for unlock requests',
       android: {
-        channelId: 'service',
+        channelId: 'service_v3',
         importance: AndroidImportance.LOW,
         ongoing: true,                    // non-dismissable
         asForegroundService: true,        // keeps the process alive
         pressAction: { id: 'default', launchActivity: 'default' },
-        smallIcon: 'ic_launcher',         // uses the app icon
         color: '#3b6ef5',
       },
     });
