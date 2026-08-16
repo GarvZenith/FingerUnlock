@@ -12,17 +12,6 @@ module.exports = function withLockScreen(config) {
     if (main) {
       main['$']['android:showWhenLocked'] = 'true';
       main['$']['android:turnScreenOn'] = 'true';
-
-      // Headless Service Mode: Remove LAUNCHER category so app icon is hidden from App Drawer
-      if (main['intent-filter']) {
-        main['intent-filter'].forEach((filter) => {
-          if (filter.category) {
-            filter.category = filter.category.filter(
-              (cat) => cat['$'] && cat['$']['android:name'] !== 'android.intent.category.LAUNCHER'
-            );
-          }
-        });
-      }
     }
     return cfg;
   });
