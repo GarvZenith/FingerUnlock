@@ -5,6 +5,30 @@ Unlock a Windows laptop from an Android phone using the phone's fingerprint —
 tap Yes, scan your fingerprint, and the laptop unlocks — over LAN or, via
 Tailscale, from anywhere on the internet.
 
+---
+
+## 🚀 Easy 1-Click Installation (For End Users)
+
+No coding or `git clone` required!
+
+### 💻 1. Windows Setup:
+1. Go to [**GitHub Releases**](https://github.com/GarvZenith/FingerUnlock/releases) and download **`FingerUnlock-v1.0.0-Windows.zip`**.
+2. Extract the zip file, right-click **`setup.bat`**, and select **Run as Administrator** (or double-click).
+3. The installer will automatically:
+   - Install the boot-time Windows Service and register the Credential Provider.
+   - Open Chrome to download **Tailscale** (for long-distance unlock from anywhere).
+   - Display your **Secret Token**, **LAN IP**, and **Tailscale IP** in the command prompt.
+
+### 📱 2. Android Phone Setup:
+1. Scan the **QR Code** below with your phone camera OR download **`FingerUnlock-v1.0.0-Android.apk`** from [**Releases**](https://github.com/GarvZenith/FingerUnlock/releases):
+
+![Android APK Download QR Code](docs/FingerUnlock_APK_QRCode.png)
+
+2. Install the APK on your Android phone and grant notification/overlay permissions.
+3. Open the app, enter your **Laptop IP** (Tailscale IP for 5G/remote unlock), **Secret Token**, and **Windows Password** → Tap **Pair this phone** → **Done!**
+
+---
+
 ## How it works
 ```
 Windows locks  ─▶  C# service detects it (SessionSwitch)  ─▶  Expo push to phone
