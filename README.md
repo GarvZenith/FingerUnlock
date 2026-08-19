@@ -69,10 +69,18 @@ Develop and test in a VM with snapshots — a broken credential provider can loc
 C++/COM credential provider · C# (.NET 8) service · Expo / React Native app
 (expo-notifications + expo-local-authentication) · Expo push / FCM.
 
-## ⚠️ Security
-- VM-only development with snapshots.
-- `config.ini` and the Firebase service-account key are gitignored — never commit them. (The account **password is now blank** in `config.ini`; it lives only on the phone.)
-- The Windows password is delivered per-unlock via **ECDH-encrypted** channel (P-256 / HKDF-SHA256 / AES-256-GCM); it is never at rest on the PC. The shared-secret **token** still authenticates requests over Tailscale/LAN.
+## ⚠️ Security & Architecture
+
+### 🔒 Production Security (Real PC / Laptop):
+- **Zero Password-at-Rest on PC:** The Windows login password is **NEVER stored on the PC or hard drive** (`config.ini` password field is blank).
+- **Phone Biometric Vault:** The password lives exclusively inside the phone's hardware-backed biometric SecureStore, accessible only after scanning your fingerprint.
+- **End-to-End ECDH Encryption:** On unlock, the phone encrypts the password dynamically via **P-256 ECDH → HKDF-SHA256 → AES-256-GCM**.
+- **RAM-Only Decryption:** The C# service decrypts the password in RAM, passes it to the C++ Credential Provider via a one-shot DPAPI `cred.bin`, and immediately wipes RAM (`SecureZeroMemory`). A stolen powered-off laptop reveals no credentials.
+- **Mesh Tunneling:** Remote requests are authenticated via a 256-bit Secret Token (`service.ini`) and encrypted end-to-end via **Tailscale (WireGuard)** tunnel.
+
+### 🧪 Development Safety:
+- Use VM snapshots when building custom C++ Credential Provider COM code to avoid accidental logon lockouts.
+- `service.ini`, `config.ini`, and Firebase service-account keys are gitignored — never commit secret credentials to public repositories.
 
 ## License
 MIT — see [LICENSE](LICENSE).
