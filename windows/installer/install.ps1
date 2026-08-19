@@ -46,6 +46,12 @@ if (-not (Test-Path $ini)) {
 }
 $token = ((Get-Content $ini | Where-Object { $_ -like 'token=*' }) -replace '^token=','').Trim()
 
+$cfg = "$dst\config.ini"
+if (-not (Test-Path $cfg)) {
+  $un = [Environment]::UserName
+  Set-Content -Path $cfg -Value @('[credentials]', "username=$un", 'domain=.', 'password=')
+}
+
 # 4) Firewall
 netsh advfirewall firewall delete rule name="FingerUnlock" 2>$null | Out-Null
 netsh advfirewall firewall add rule name="FingerUnlock" dir=in action=allow protocol=TCP localport=5599 | Out-Null
