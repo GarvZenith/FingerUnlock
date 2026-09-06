@@ -1,10 +1,23 @@
-// Expo config plugin: Register Android Quick Settings TileService (5 Exact States) & TransparentAuthActivity
-const { withAndroidManifest, withDangerousMod } = require('@expo/config-plugins');
+// Expo config plugin: Register Android Quick Settings TileService (5 Exact States), Native SharedPreferences, & TransparentAuthActivity
+const { withMainApplication, withAndroidManifest, withDangerousMod } = require('@expo/config-plugins');
 const fs = require('fs');
 const path = require('path');
 
 module.exports = function withQuickSettingsTile(config) {
-  // 1) Add TileService & TransparentAuthActivity to AndroidManifest.xml
+  // 1) Register SharedPreferencesPackage in MainApplication.kt
+  config = withMainApplication(config, (cfg) => {
+    let content = cfg.modResults.contents;
+    if (!content.includes('SharedPreferencesPackage()')) {
+      content = content.replace(
+        'PackageList(this).packages',
+        'PackageList(this).packages.apply { add(SharedPreferencesPackage()) }'
+      );
+      cfg.modResults.contents = content;
+    }
+    return cfg;
+  });
+
+  // 2) Add TileService & TransparentAuthActivity to AndroidManifest.xml
   config = withAndroidManifest(config, (cfg) => {
     const app = cfg.modResults.manifest.application && cfg.modResults.manifest.application[0];
     if (app) {
@@ -57,7 +70,7 @@ module.exports = function withQuickSettingsTile(config) {
     return cfg;
   });
 
-  // 2) Write Drawables and Kotlin source files automatically during prebuild
+  // 3) Write Drawables and Kotlin source files automatically during prebuild
   config = withDangerousMod(config, [
     'android',
     async (cfg) => {
@@ -71,7 +84,7 @@ module.exports = function withQuickSettingsTile(config) {
         fs.mkdirSync(drawableDir, { recursive: true });
       }
 
-      // State 1: Default (Option 6 - Purple/Blue gradient fingerprint)
+      // State 1: Default (Option 6 - Fingerprint icon)
       const icDefaultXml = `<vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
@@ -140,7 +153,7 @@ module.exports = function withQuickSettingsTile(config) {
 </vector>`;
       fs.writeFileSync(path.join(drawableDir, 'ic_tile_error.xml'), icErrorXml, 'utf8');
 
-      // Write Kotlin Target Directory
+      // Target Source Directory
       const targetDir = path.join(
         platformRoot,
         'app/src/main/java',
@@ -150,7 +163,47 @@ module.exports = function withQuickSettingsTile(config) {
         fs.mkdirSync(targetDir, { recursive: true });
       }
 
-      // TileService.kt
+      // 1. SharedPreferencesModule.kt
+      const spModuleContent = `package ${packageName}
+
+import android.content.Context
+import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.bridge.ReactContextBaseJavaModule
+import com.facebook.react.bridge.ReactMethod
+
+class SharedPreferencesModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
+    override fun getName(): String = "SharedPreferences"
+
+    @ReactMethod
+    fun setItem(key: String, value: String) {
+        val prefs = reactApplicationContext.getSharedPreferences("fu_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString(key, value).apply()
+    }
+}
+`;
+      fs.writeFileSync(path.join(targetDir, 'SharedPreferencesModule.kt'), spModuleContent, 'utf8');
+
+      // 2. SharedPreferencesPackage.kt
+      const spPackageContent = `package ${packageName}
+
+import com.facebook.react.ReactPackage
+import com.facebook.react.bridge.NativeModule
+import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.uimanager.ViewManager
+
+class SharedPreferencesPackage : ReactPackage {
+    override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> {
+        return listOf(SharedPreferencesModule(reactContext))
+    }
+
+    override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> {
+        return emptyList()
+    }
+}
+`;
+      fs.writeFileSync(path.join(targetDir, 'SharedPreferencesPackage.kt'), spPackageContent, 'utf8');
+
+      // 3. TileService.kt
       const tileContent = `package ${packageName}
 
 import android.app.ActivityOptions
@@ -245,13 +298,15 @@ class FingerUnlockTileService : TileService() {
 `;
       fs.writeFileSync(path.join(targetDir, 'FingerUnlockTileService.kt'), tileContent, 'utf8');
 
-      // TransparentAuthActivity.kt
+      // 4. TransparentAuthActivity.kt
       const authContent = `package ${packageName}
 
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.service.quicksettings.Tile
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
@@ -264,6 +319,20 @@ import org.json.JSONObject
 class TransparentAuthActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Set screen flags for translucent activity over lock screen or apps
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+            )
+        }
+        window.setBackgroundDrawableResource(android.R.color.transparent)
 
         // State 3: AUTHENTICATING
         FingerUnlockTileService.updateState(
@@ -349,9 +418,10 @@ class TransparentAuthActivity : FragmentActivity() {
     private fun sendUnlockRequest(): Boolean {
         val candidates = mutableListOf<Pair<String, String>>()
 
+        // Try reading laptops array from fu_prefs
         try {
-            val ss = getSharedPreferences("SecureStore", MODE_PRIVATE)
-            val laptopsJson = ss.getString("fu_laptops", null)
+            val prefs = getSharedPreferences("fu_prefs", MODE_PRIVATE)
+            val laptopsJson = prefs.getString("laptops_json", null)
             if (laptopsJson != null) {
                 val arr = JSONArray(laptopsJson)
                 for (i in 0 until arr.length()) {
@@ -363,13 +433,16 @@ class TransparentAuthActivity : FragmentActivity() {
                     if (tsIp.isNotEmpty() && tsIp != mainIp) candidates.add(Pair(tsIp, token))
                 }
             }
+            // Direct single keys fallback
+            val singleIp = prefs.getString("ip", null)
+            val singleTsIp = prefs.getString("tailscaleIp", null)
+            val singleToken = prefs.getString("token", "changeme") ?: "changeme"
+            if (singleIp != null && singleIp.isNotEmpty()) candidates.add(Pair(singleIp, singleToken))
+            if (singleTsIp != null && singleTsIp.isNotEmpty() && singleTsIp != singleIp) candidates.add(Pair(singleTsIp, singleToken))
         } catch (e: Exception) {}
 
         if (candidates.isEmpty()) {
-            val prefs = getSharedPreferences("fu_prefs", MODE_PRIVATE)
-            val ip = prefs.getString("ip", "192.168.1.50") ?: "192.168.1.50"
-            val token = prefs.getString("token", "changeme") ?: "changeme"
-            candidates.add(Pair(ip, token))
+            candidates.add(Pair("192.168.1.50", "changeme"))
         }
 
         for (candidate in candidates) {

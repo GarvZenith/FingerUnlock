@@ -33,17 +33,19 @@ async function loadLaptops() {
 }
 async function saveLaptops(list) {
   await SecureStore.setItemAsync('fu_laptops', JSON.stringify(list));
-  if (list && list.length > 0) {
-    const l = list[0];
-    if (Platform.OS === 'android') {
-      try {
-        const NativeModules = require('react-native').NativeModules;
-        if (NativeModules.SharedPreferences) {
+  if (Platform.OS === 'android') {
+    try {
+      const NativeModules = require('react-native').NativeModules;
+      if (NativeModules.SharedPreferences) {
+        NativeModules.SharedPreferences.setItem('laptops_json', JSON.stringify(list || []));
+        if (list && list.length > 0) {
+          const l = list[0];
           NativeModules.SharedPreferences.setItem('ip', l.ip || '');
+          NativeModules.SharedPreferences.setItem('tailscaleIp', l.tailscaleIp || '');
           NativeModules.SharedPreferences.setItem('token', l.token || '');
         }
-      } catch (e) {}
-    }
+      }
+    } catch (e) {}
   }
 }
 
