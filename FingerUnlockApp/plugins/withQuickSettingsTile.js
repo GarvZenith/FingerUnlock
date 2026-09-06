@@ -1,4 +1,4 @@
-// Expo config plugin: Register Android Quick Settings TileService (5 Exact States), Native SharedPreferences, & TransparentAuthActivity
+// Expo config plugin: Register Android Quick Settings TileService (Approved Option 1 5-State Design), Native SharedPreferences, & TransparentAuthActivity
 const { withMainApplication, withAndroidManifest, withDangerousMod } = require('@expo/config-plugins');
 const fs = require('fs');
 const path = require('path');
@@ -84,7 +84,7 @@ module.exports = function withQuickSettingsTile(config) {
         fs.mkdirSync(drawableDir, { recursive: true });
       }
 
-      // State 1: Default placeholder
+      // State 1: Default (Option 1 Approved — Laptop outline + fingerprint arc above screen)
       const icDefaultXml = `<vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
@@ -92,11 +92,17 @@ module.exports = function withQuickSettingsTile(config) {
     android:viewportHeight="24">
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M17.81,4.47A9.94,9.94 0,0 0,12 2.5C9.4,2.5 6.9,3.5 5,5.32c-0.2,0.19 -0.2,0.5 0,0.7 0.2,0.2 0.51,0.2 0.71,0A8.93,8.93 0,0 1,12 4.5c2.25,0 4.41,0.87 6.04,2.44 0.2,0.19 0.51,0.19 0.71,0 0.19,-0.2 0.19,-0.51 0.06,-0.67zM3.5,9.5A9.97,9.97 0,0 1,12 6.5c3.15,0 6.07,1.46 7.97,3.95 0.17,0.22 0.48,0.26 0.7,0.09 0.22,-0.17 0.26,-0.48 0.09,-0.7A10.97,10.97 0,0 0,12 5.5c-3.46,0 -6.67,1.6 -8.76,4.34 -0.17,0.22 -0.13,0.53 0.09,0.7 0.22,0.17 0.53,0.13 0.7,-0.09zM9.5,12c0,-1.38 1.12,-2.5 2.5,-2.5s2.5,1.12 2.5,2.5c0,1.93 -1.57,3.5 -3.5,3.5 -0.28,0 -0.5,0.22 -0.5,0.5s0.22,0.5 0.5,0.5c2.48,0 4.5,-2.02 4.5,-4.5 0,-1.93 -1.57,-3.5 -3.5,-3.5S8.5,10.07 8.5,12c0,0.28 0.22,0.5 0.5,0.5s0.5,-0.22 0.5,-0.5zM12,18.5c-2.48,0 -4.5,-2.02 -4.5,-4.5 0,-0.28 -0.22,-0.5 -0.5,-0.5s-0.5,0.22 -0.5,0.5c0,3.03 2.47,5.5 5.5,5.5 0.28,0 0.5,-0.22 0.5,-0.5s-0.22,-0.5 -0.5,-0.5z"/>
+        android:pathData="M4,17h16c0.55,0 1,0.45 1,1v0.5c0,0.55 -0.45,1 -1,1H4c-0.55,0 -1,-0.45 -1,-1V18c0,-0.55 0.45,-1 1,-1z"/>
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M6,10h12v6H6zM5,9c-0.55,0 -1,0.45 -1,1v6h16v-6c0,-0.55 -0.45,-1 -1,-1H5z"/>
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M17.81,4.47A9.94,9.94 0,0 0,12 2.5C9.4,2.5 6.9,3.5 5,5.32c-0.2,0.19 -0.2,0.5 0,0.7 0.2,0.2 0.51,0.2 0.71,0A8.93,8.93 0,0 1,12 4.5c2.25,0 4.41,0.87 6.04,2.44 0.2,0.19 0.51,0.19 0.71,0 0.19,-0.2 0.19,-0.51 0.06,-0.67zM12,7.5c-1.38,0 -2.5,1.12 -2.5,2.5 0,0.28 0.22,0.5 0.5,0.5s0.5,-0.22 0.5,-0.5c0,-0.83 0.67,-1.5 1.5,-1.5s1.5,0.67 1.5,1.5c0,0.28 0.22,0.5 0.5,0.5s0.5,-0.22 0.5,-0.5c0,-1.38 -1.12,-2.5 -2.5,-2.5z"/>
 </vector>`;
       fs.writeFileSync(path.join(drawableDir, 'ic_tile_default.xml'), icDefaultXml, 'utf8');
 
-      // State 2: Pressed placeholder
+      // State 2: Pressed (Option 1 Approved — Laptop + radiating signal arcs)
       const icPressedXml = `<vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
@@ -104,11 +110,17 @@ module.exports = function withQuickSettingsTile(config) {
     android:viewportHeight="24">
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M4,15h16c0.55,0 1,0.45 1,1v1c0,0.55 -0.45,1 -1,1H4c-0.55,0 -1,-0.45 -1,-1v-1c0,-0.55 0.45,-1 1,-1zM6,8h12v6H6zM5,7c-0.55,0 -1,0.45 -1,1v7h16V8c0,-0.55 -0.45,-1 -1,-1H5zM12,2A4,4 0,0 0,8 6h1.5a2.5,2.5 0,0 1,5 0H16A4,4 0,0 0,12 2z"/>
+        android:pathData="M4,17h16c0.55,0 1,0.45 1,1v0.5c0,0.55 -0.45,1 -1,1H4c-0.55,0 -1,-0.45 -1,-1V18c0,-0.55 0.45,-1 1,-1z"/>
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M6,10h12v6H6zM5,9c-0.55,0 -1,0.45 -1,1v6h16v-6c0,-0.55 -0.45,-1 -1,-1H5z"/>
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M12,2A5,5 0,0 0,7 7h1.5a3.5,3.5 0,0 1,7 0H17A5,5 0,0 0,12 2zM12,4.5A2.5,2.5 0,0 0,9.5 7h1.5a1,1 0,0 1,2 0H14.5A2.5,2.5 0,0 0,12 4.5z"/>
 </vector>`;
       fs.writeFileSync(path.join(drawableDir, 'ic_tile_pressed.xml'), icPressedXml, 'utf8');
 
-      // State 3: Authenticating placeholder
+      // State 3: Authenticating (Option 1 Approved — Fingerprint + progress ring)
       const icAuthXml = `<vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
@@ -116,11 +128,14 @@ module.exports = function withQuickSettingsTile(config) {
     android:viewportHeight="24">
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M12,2A10,10 0,1 0,22 12,10 10 0,0 0,12 2zm0,18a8,8 0,1 1,8 -8,8 8 0,0 1,-8 8zM12,4A8,8 0,0 1,20 12h2A10,10 0,0 0,12 2z"/>
+        android:pathData="M12,2A10,10 0,1 0,22 12,10 10 0,0 0,12 2zm0,18a8,8 0,1 1,8 -8,8 8 0,0 1,-8 8z"/>
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M12,6.5c-3.03,0 -5.5,2.47 -5.5,5.5 0,0.28 0.22,0.5 0.5,0.5s0.5,-0.22 0.5,-0.5c0,-2.48 2.02,-4.5 4.5,-4.5s4.5,2.02 4.5,4.5c0,0.28 0.22,0.5 0.5,0.5s0.5,-0.22 0.5,-0.5c0,-3.03 -2.47,-5.5 -5.5,-5.5zM12,9.5c-1.38,0 -2.5,1.12 -2.5,2.5 0,0.28 0.22,0.5 0.5,0.5s0.5,-0.22 0.5,-0.5c0,-0.83 0.67,-1.5 1.5,-1.5s1.5,0.67 1.5,1.5c0,1.93 -1.57,3.5 -3.5,3.5 -0.28,0 -0.5,0.22 -0.5,0.5s0.22,0.5 0.5,0.5c2.48,0 4.5,-2.02 4.5,-4.5 0,-1.93 -1.57,-3.5 -3.5,-3.5z"/>
 </vector>`;
       fs.writeFileSync(path.join(drawableDir, 'ic_tile_authenticating.xml'), icAuthXml, 'utf8');
 
-      // State 4: Success placeholder
+      // State 4: Success (Option 1 Approved — Laptop display + checkmark shield)
       const icSuccessXml = `<vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
@@ -128,11 +143,14 @@ module.exports = function withQuickSettingsTile(config) {
     android:viewportHeight="24">
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M4,15h16v2H4zM5,6h14c0.55,0 1,0.45 1,1v7H4V7c0,-0.55 0.45,-1 1,-1zM10.5,12.5l5,-5 -1.4,-1.4 -3.6,3.6 -1.6,-1.6 -1.4,1.4z"/>
+        android:pathData="M4,17h16c0.55,0 1,0.45 1,1v0.5c0,0.55 -0.45,1 -1,1H4c-0.55,0 -1,-0.45 -1,-1V18c0,-0.55 0.45,-1 1,-1z"/>
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M12,3L5,6v5c0,4.55 3.03,8.74 7,9.93 3.97,-1.19 7,-5.38 7,-9.93V6l-7,-3zM10.5,14.5l-3,-3 1.41,-1.41L10.5,11.67l4.59,-4.59L16.5,8.5l-6,6z"/>
 </vector>`;
       fs.writeFileSync(path.join(drawableDir, 'ic_tile_success.xml'), icSuccessXml, 'utf8');
 
-      // State 5: Error placeholder
+      // State 5: Error (Option 1 Approved — Laptop display + warning triangle)
       const icErrorXml = `<vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
@@ -140,7 +158,10 @@ module.exports = function withQuickSettingsTile(config) {
     android:viewportHeight="24">
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M4,15h16v2H4zM5,6h14c0.55,0 1,0.45 1,1v7H4V7c0,-0.55 0.45,-1 1,-1zM11,8h2v3h-2zM11,12h2v2h-2z"/>
+        android:pathData="M4,17h16c0.55,0 1,0.45 1,1v0.5c0,0.55 -0.45,1 -1,1H4c-0.55,0 -1,-0.45 -1,-1V18c0,-0.55 0.45,-1 1,-1z"/>
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M1,21h22L12,2 1,21zm12,-3h-2v-2h2v2zm0,-4h-2v-4h2v4z"/>
 </vector>`;
       fs.writeFileSync(path.join(drawableDir, 'ic_tile_error.xml'), icErrorXml, 'utf8');
 
