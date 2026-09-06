@@ -173,47 +173,56 @@ class TransparentAuthActivity : FragmentActivity() {
     }
 
     private fun sendUnlockRequest(): Boolean {
-        try {
-            var ip = "192.168.1.50"
-            var token = "changeme"
+        val candidates = mutableListOf<Pair<String, String>>()
 
-            val prefs = getSharedPreferences("fu_prefs", MODE_PRIVATE)
-            if (prefs.contains("ip")) {
-                ip = prefs.getString("ip", ip) ?: ip
-                token = prefs.getString("token", token) ?: token
-            } else {
-                val ss = getSharedPreferences("SecureStore", MODE_PRIVATE)
-                val laptopsJson = ss.getString("fu_laptops", null)
-                if (laptopsJson != null) {
-                    val arr = org.json.JSONArray(laptopsJson)
-                    if (arr.length() > 0) {
-                        val obj = arr.getJSONObject(0)
-                        ip = obj.optString("ip", ip)
-                        token = obj.optString("token", token)
-                    }
+        try {
+            val ss = getSharedPreferences("SecureStore", MODE_PRIVATE)
+            val laptopsJson = ss.getString("fu_laptops", null)
+            if (laptopsJson != null) {
+                val arr = org.json.JSONArray(laptopsJson)
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    val mainIp = obj.optString("ip", "")
+                    val tsIp = obj.optString("tailscaleIp", "")
+                    val token = obj.optString("token", "changeme")
+                    if (mainIp.isNotEmpty()) candidates.add(Pair(mainIp, token))
+                    if (tsIp.isNotEmpty() && tsIp != mainIp) candidates.add(Pair(tsIp, token))
                 }
             }
+        } catch (e: Exception) {}
 
-            val url = URL("http://$ip:5599/unlock")
-            val conn = url.openConnection() as HttpURLConnection
-            conn.requestMethod = "POST"
-            conn.setRequestProperty("Content-Type", "application/json")
-            conn.setRequestProperty("X-Token", token)
-            conn.connectTimeout = 2500
-            conn.readTimeout = 2500
-            conn.doOutput = true
-
-            val json = JSONObject()
-            json.put("token", token)
-
-            conn.outputStream.use { os ->
-                os.write(json.toString().toByteArray(Charsets.UTF_8))
-            }
-
-            return conn.responseCode == 200
-        } catch (e: Exception) {
-            return false
+        if (candidates.isEmpty()) {
+            val prefs = getSharedPreferences("fu_prefs", MODE_PRIVATE)
+            val ip = prefs.getString("ip", "192.168.1.50") ?: "192.168.1.50"
+            val token = prefs.getString("token", "changeme") ?: "changeme"
+            candidates.add(Pair(ip, token))
         }
+
+        for (candidate in candidates) {
+            val (ip, token) = candidate
+            try {
+                val url = URL("http://$ip:5599/unlock")
+                val conn = url.openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("X-Token", token)
+                conn.connectTimeout = 1800
+                conn.readTimeout = 1800
+                conn.doOutput = true
+
+                val json = JSONObject()
+                json.put("token", token)
+
+                conn.outputStream.use { os ->
+                    os.write(json.toString().toByteArray(Charsets.UTF_8))
+                }
+
+                if (conn.responseCode == 200) return true
+            } catch (e: Exception) {
+                // Try next IP candidate
+            }
+        }
+        return false
     }
 }
 `;
