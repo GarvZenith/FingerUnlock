@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 module.exports = function withQuickSettingsTile(config) {
-  // 1) Add TileService to AndroidManifest.xml
+  // 1) Add TileService to AndroidManifest.xml with correct mipmap icon
   config = withAndroidManifest(config, (cfg) => {
     const app = cfg.modResults.manifest.application && cfg.modResults.manifest.application[0];
     if (app) {
@@ -19,7 +19,7 @@ module.exports = function withQuickSettingsTile(config) {
           '$': {
             'android:name': '.FingerUnlockTileService',
             'android:label': 'Unlock Laptop',
-            'android:icon': '@drawable/icon',
+            'android:icon': '@mipmap/ic_launcher',
             'android:permission': 'android.permission.BIND_QUICK_SETTINGS_TILE',
             'android:exported': 'true',
           },
@@ -46,9 +46,10 @@ module.exports = function withQuickSettingsTile(config) {
     async (cfg) => {
       const packageName = cfg.android?.package || 'com.garv.fingerunlock';
       const packagePath = packageName.replace(/\./g, '/');
+      const platformRoot = cfg.modRequest.platformProjectRoot || path.join(cfg.modRequest.projectRoot, 'android');
       const targetDir = path.join(
-        cfg.modRequest.projectRoot,
-        'android/app/src/main/java',
+        platformRoot,
+        'app/src/main/java',
         packagePath
       );
 
