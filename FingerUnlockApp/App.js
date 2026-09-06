@@ -118,22 +118,13 @@ function App() {
     } catch (e) { ToastAndroid.show('Failed: ' + e.message, ToastAndroid.SHORT); }
   }
 
-  // ---- call-style incoming screen ----
-  function dropCall() { Vibration.cancel(); try { notifee.cancelAllNotifications(); } catch {} }
-  function showIncoming(machine, nonce) { setIncoming({ machine, nonce }); setScreen('incoming'); }
-  function closeIncoming() { dropCall(); setIncoming(null); setScreen((s) => (s === 'incoming' ? 'home' : s)); }
-  async function acceptIncoming() {
+  // ---- direct fingerprint unlock trigger (no ringing call UI) ----
+  function dropCall() { try { notifee.cancelAllNotifications(); } catch {} }
+  async function showIncoming(machine, nonce) {
     dropCall();
-    const inc = incoming;
-    if (inc) await handleUnlock(inc.machine, inc.nonce, 'yes');   // fingerprint -> encrypted approve
-    setIncoming(null); setScreen('home');
+    await handleUnlock(machine, nonce, 'yes');
   }
-  async function declineIncoming() {
-    dropCall();
-    const inc = incoming;
-    setIncoming(null); setScreen('home');
-    if (inc) await handleUnlock(inc.machine, inc.nonce, 'no');
-  }
+  function closeIncoming() { dropCall(); }
 
   // Register this phone's FCM token with every paired laptop (native full-screen path).
   async function registerFcmAll(list) {
@@ -193,7 +184,7 @@ function App() {
     } else if (resp.actionIdentifier === 'no') {
       await handleUnlock(machine, nonce, 'no');
     } else {
-      showIncoming(machine, nonce);
+      await handleUnlock(machine, nonce, 'yes');
     }
   }
 

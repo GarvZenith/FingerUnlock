@@ -30,6 +30,7 @@
       "expo-notifications",
       "@react-native-firebase/app",
       "./plugins/withLockScreen",
+      "./plugins/withQuickSettingsTile",
       [
         "expo-build-properties",
         {
