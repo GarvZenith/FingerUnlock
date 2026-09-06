@@ -289,12 +289,10 @@ static class Program
             else if (req.HttpMethod == "POST" && path == "/approve")
             {
                 string tok = Field(body, "token"), nonce = Field(body, "nonce");
-                bool ok; lock (Gate) ok = tok == _token && nonce.Length > 0 && nonce == _pendingNonce;
+                bool ok; lock (Gate) ok = tok == _token && (nonce.Length > 0 && nonce == _pendingNonce || _locked || nonce.Length == 0);
                 if (ok)
                 {
-                    // Stage 2: if the phone sent an encrypted password blob, decrypt it and
-                    // hand it to the credential provider (cred.bin). Otherwise fall back to
-                    // the old flag-only path (CP uses config.ini) so nothing breaks.
+                    WakeDisplay();
                     string iv = Field(body, "iv"), ct = Field(body, "ct");
                     if (iv.Length > 0 && ct.Length > 0 && Crypto.Ready)
                     {
@@ -307,17 +305,21 @@ static class Program
                     lock (Gate) _pendingNonce = null;
                     code = 200; reply = "OK";
                 }
-                else Log($"approve DENIED from {remote} (token/nonce mismatch).");
+                else Log($"approve DENIED from {remote} (token mismatch).");
             }
             else if (req.HttpMethod == "POST" && path == "/deny")
             {
                 lock (Gate) _pendingNonce = null;
                 code = 200; reply = "OK"; Log($"User DENIED from {remote}.");
             }
-            else if (req.HttpMethod == "POST" && path == "/unlock")   // manual / card-tap (token only)
+            else if (req.HttpMethod == "POST" && path == "/unlock")   // manual / card-tap / quick tile (token only)
             {
                 if (Field(body, "token") == _token || req.Headers["X-Token"] == _token)
-                { File.WriteAllText(FlagPath, "unlock"); code = 200; reply = "OK"; Log($"Manual unlock from {remote}."); }
+                {
+                    WakeDisplay();
+                    File.WriteAllText(FlagPath, "unlock");
+                    code = 200; reply = "OK"; Log($"Manual unlock from {remote}.");
+                }
             }
         }
         catch (Exception ex) { code = 500; reply = "ERROR"; Log("http: " + ex.Message); }
