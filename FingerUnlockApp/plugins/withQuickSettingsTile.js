@@ -84,7 +84,7 @@ module.exports = function withQuickSettingsTile(config) {
         fs.mkdirSync(drawableDir, { recursive: true });
       }
 
-      // State 1: Default (Option 6 - Fingerprint icon)
+      // State 1: Default placeholder
       const icDefaultXml = `<vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
@@ -96,59 +96,50 @@ module.exports = function withQuickSettingsTile(config) {
 </vector>`;
       fs.writeFileSync(path.join(drawableDir, 'ic_tile_default.xml'), icDefaultXml, 'utf8');
 
-      // State 2: Pressed (Option 9 - Laptop + radiating signal rings)
+      // State 2: Pressed placeholder
       const icPressedXml = `<vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
     <path
-        android:fillColor="#00E5FF"
-        android:pathData="M4,15h16c0.55,0 1,0.45 1,1v1c0,0.55 -0.45,1 -1,1H4c-0.55,0 -1,-0.45 -1,-1v-1c0,-0.55 0.45,-1 1,-1z"/>
-    <path
-        android:fillColor="#00E5FF"
-        android:pathData="M6,8h12v6H6zM5,7c-0.55,0 -1,0.45 -1,1v7h16V8c0,-0.55 -0.45,-1 -1,-1H5z"/>
-    <path
-        android:fillColor="#00E5FF"
-        android:pathData="M12,2A4,4 0,0 0,8 6h1.5a2.5,2.5 0,0 1,5 0H16A4,4 0,0 0,12 2z"/>
+        android:fillColor="#FFFFFF"
+        android:pathData="M4,15h16c0.55,0 1,0.45 1,1v1c0,0.55 -0.45,1 -1,1H4c-0.55,0 -1,-0.45 -1,-1v-1c0,-0.55 0.45,-1 1,-1zM6,8h12v6H6zM5,7c-0.55,0 -1,0.45 -1,1v7h16V8c0,-0.55 -0.45,-1 -1,-1H5zM12,2A4,4 0,0 0,8 6h1.5a2.5,2.5 0,0 1,5 0H16A4,4 0,0 0,12 2z"/>
 </vector>`;
       fs.writeFileSync(path.join(drawableDir, 'ic_tile_pressed.xml'), icPressedXml, 'utf8');
 
-      // State 3: Authenticating (Fingerprint + Circular Progress Ring)
+      // State 3: Authenticating placeholder
       const icAuthXml = `<vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
     <path
-        android:fillColor="#3399FF"
-        android:pathData="M12,2A10,10 0,1 0,22 12,10 10 0,0 0,12 2zm0,18a8,8 0,1 1,8 -8,8 8 0,0 1,-8 8z"/>
-    <path
-        android:fillColor="#00E5FF"
-        android:pathData="M12,4A8,8 0,0 1,20 12h2A10,10 0,0 0,12 2z"/>
+        android:fillColor="#FFFFFF"
+        android:pathData="M12,2A10,10 0,1 0,22 12,10 10 0,0 0,12 2zm0,18a8,8 0,1 1,8 -8,8 8 0,0 1,-8 8zM12,4A8,8 0,0 1,20 12h2A10,10 0,0 0,12 2z"/>
 </vector>`;
       fs.writeFileSync(path.join(drawableDir, 'ic_tile_authenticating.xml'), icAuthXml, 'utf8');
 
-      // State 4: Success (Green Laptop + Checkmark)
+      // State 4: Success placeholder
       const icSuccessXml = `<vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
     <path
-        android:fillColor="#37D67A"
+        android:fillColor="#FFFFFF"
         android:pathData="M4,15h16v2H4zM5,6h14c0.55,0 1,0.45 1,1v7H4V7c0,-0.55 0.45,-1 1,-1zM10.5,12.5l5,-5 -1.4,-1.4 -3.6,3.6 -1.6,-1.6 -1.4,1.4z"/>
 </vector>`;
       fs.writeFileSync(path.join(drawableDir, 'ic_tile_success.xml'), icSuccessXml, 'utf8');
 
-      // State 5: Error (Red Laptop + Error Badge)
+      // State 5: Error placeholder
       const icErrorXml = `<vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
     <path
-        android:fillColor="#FF4D4D"
+        android:fillColor="#FFFFFF"
         android:pathData="M4,15h16v2H4zM5,6h14c0.55,0 1,0.45 1,1v7H4V7c0,-0.55 0.45,-1 1,-1zM11,8h2v3h-2zM11,12h2v2h-2z"/>
 </vector>`;
       fs.writeFileSync(path.join(drawableDir, 'ic_tile_error.xml'), icErrorXml, 'utf8');
@@ -259,7 +250,7 @@ class FingerUnlockTileService : TileService() {
         super.onClick()
         activeInstance = this
         try {
-            // State 2: PRESSED (Option 9 design)
+            // State 2: PRESSED
             val tile = qsTile
             if (tile != null) {
                 tile.state = Tile.STATE_ACTIVE
@@ -298,7 +289,7 @@ class FingerUnlockTileService : TileService() {
 `;
       fs.writeFileSync(path.join(targetDir, 'FingerUnlockTileService.kt'), tileContent, 'utf8');
 
-      // 4. TransparentAuthActivity.kt
+      // 4. TransparentAuthActivity.kt (Multi-endpoint parallel racing execution)
       const authContent = `package ${packageName}
 
 import android.os.Build
@@ -320,7 +311,7 @@ class TransparentAuthActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Set screen flags for translucent activity over lock screen or apps
+        // Window overlay flags to prevent system bar glitches & allow unlock from lock screen / apps
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
@@ -381,7 +372,7 @@ class TransparentAuthActivity : FragmentActivity() {
             }
             runOnUiThread {
                 if (success) {
-                    // State 4: SUCCESS (Green Tile)
+                    // State 4: SUCCESS
                     FingerUnlockTileService.updateState(
                         Tile.STATE_ACTIVE,
                         R.drawable.ic_tile_success,
@@ -389,7 +380,7 @@ class TransparentAuthActivity : FragmentActivity() {
                     )
                     Toast.makeText(applicationContext, "✅ Laptop Unlocked!", Toast.LENGTH_SHORT).show()
                 } else {
-                    // State 5: ERROR (Red Tile)
+                    // State 5: ERROR
                     FingerUnlockTileService.updateState(
                         Tile.STATE_INACTIVE,
                         R.drawable.ic_tile_error,
@@ -418,7 +409,6 @@ class TransparentAuthActivity : FragmentActivity() {
     private fun sendUnlockRequest(): Boolean {
         val candidates = mutableListOf<Pair<String, String>>()
 
-        // Try reading laptops array from fu_prefs
         try {
             val prefs = getSharedPreferences("fu_prefs", MODE_PRIVATE)
             val laptopsJson = prefs.getString("laptops_json", null)
@@ -433,43 +423,62 @@ class TransparentAuthActivity : FragmentActivity() {
                     if (tsIp.isNotEmpty() && tsIp != mainIp) candidates.add(Pair(tsIp, token))
                 }
             }
-            // Direct single keys fallback
             val singleIp = prefs.getString("ip", null)
             val singleTsIp = prefs.getString("tailscaleIp", null)
             val singleToken = prefs.getString("token", "changeme") ?: "changeme"
-            if (singleIp != null && singleIp.isNotEmpty()) candidates.add(Pair(singleIp, singleToken))
-            if (singleTsIp != null && singleTsIp.isNotEmpty() && singleTsIp != singleIp) candidates.add(Pair(singleTsIp, singleToken))
+            if (singleIp != null && singleIp.isNotEmpty() && !candidates.any { it.first == singleIp }) {
+                candidates.add(Pair(singleIp, singleToken))
+            }
+            if (singleTsIp != null && singleTsIp.isNotEmpty() && singleTsIp != singleIp && !candidates.any { it.first == singleTsIp }) {
+                candidates.add(Pair(singleTsIp, singleToken))
+            }
         } catch (e: Exception) {}
 
-        if (candidates.isEmpty()) {
-            candidates.add(Pair("192.168.1.50", "changeme"))
-        }
+        if (candidates.isEmpty()) return false
+
+        // Parallel race execution across all candidate IPs (LAN, Tailscale, Hotspot)
+        val poolSize = candidates.size.coerceAtLeast(1)
+        val executor = java.util.concurrent.Executors.newFixedThreadPool(poolSize)
+        val cs = java.util.concurrent.ExecutorCompletionService<Boolean>(executor)
 
         for (candidate in candidates) {
             val (ip, token) = candidate
-            try {
-                val url = URL("http://$ip:5599/unlock")
-                val conn = url.openConnection() as HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.setRequestProperty("Content-Type", "application/json")
-                conn.setRequestProperty("X-Token", token)
-                conn.connectTimeout = 2000
-                conn.readTimeout = 2000
-                conn.doOutput = true
+            cs.submit {
+                try {
+                    val url = URL("http://$ip:5599/unlock")
+                    val conn = url.openConnection() as HttpURLConnection
+                    conn.requestMethod = "POST"
+                    conn.setRequestProperty("Content-Type", "application/json")
+                    conn.setRequestProperty("X-Token", token)
+                    conn.connectTimeout = 2000
+                    conn.readTimeout = 2000
+                    conn.doOutput = true
 
-                val json = JSONObject()
-                json.put("token", token)
+                    val json = JSONObject()
+                    json.put("token", token)
 
-                conn.outputStream.use { os ->
-                    os.write(json.toString().toByteArray(Charsets.UTF_8))
+                    conn.outputStream.use { os ->
+                        os.write(json.toString().toByteArray(Charsets.UTF_8))
+                    }
+                    conn.responseCode == 200
+                } catch (e: Exception) {
+                    false
                 }
-
-                if (conn.responseCode == 200) return true
-            } catch (e: Exception) {
-                // Try next candidate IP
             }
         }
-        return false
+
+        var success = false
+        for (i in candidates.indices) {
+            try {
+                val future = cs.poll(2200, java.util.concurrent.TimeUnit.MILLISECONDS)
+                if (future != null && future.get() == true) {
+                    success = true
+                    break
+                }
+            } catch (e: Exception) {}
+        }
+        executor.shutdownNow()
+        return success
     }
 }
 `;

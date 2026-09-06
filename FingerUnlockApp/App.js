@@ -50,15 +50,42 @@ async function saveLaptops(list) {
 }
 
 async function postTo(l, path, extra, timeoutMs = 6000) {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    return await fetch(`http://${l.ip}:${PORT}/${path}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...extra, token: l.token }),
-      signal: ctrl.signal,
+  const ips = [];
+  if (l && l.ip) ips.push(l.ip);
+  if (l && l.tailscaleIp && l.tailscaleIp !== l.ip) ips.push(l.tailscaleIp);
+  if (ips.length === 0) throw new Error('No IP configured');
+
+  return new Promise((resolve, reject) => {
+    let completed = 0;
+    let resolved = false;
+    const errors = [];
+
+    ips.forEach((ip) => {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), timeoutMs);
+      fetch(`http://${ip}:${PORT}/${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...extra, token: l ? l.token : '' }),
+        signal: ctrl.signal,
+      })
+        .then((res) => {
+          clearTimeout(t);
+          if (!resolved) {
+            resolved = true;
+            resolve(res);
+          }
+        })
+        .catch((err) => {
+          clearTimeout(t);
+          errors.push(err);
+          completed++;
+          if (completed === ips.length && !resolved) {
+            reject(errors[0] || new Error('Connection failed'));
+          }
+        });
     });
-  } finally { clearTimeout(t); }
+  });
 }
 
 function App() {
