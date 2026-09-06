@@ -437,27 +437,31 @@ class TransparentAuthActivity : FragmentActivity() {
                 val arr = JSONArray(laptopsJson)
                 for (i in 0 until arr.length()) {
                     val obj = arr.getJSONObject(i)
-                    val mainIp = obj.optString("ip", "")
-                    val tsIp = obj.optString("tailscaleIp", "")
-                    val token = obj.optString("token", "changeme")
+                    val mainIp = obj.optString("ip", "").trim()
+                    val tsIp = obj.optString("tailscaleIp", "").trim()
+                    val token = obj.optString("token", "changeme").trim()
                     if (mainIp.isNotEmpty()) candidates.add(Pair(mainIp, token))
                     if (tsIp.isNotEmpty() && tsIp != mainIp) candidates.add(Pair(tsIp, token))
                 }
             }
-            val singleIp = prefs.getString("ip", null)
-            val singleTsIp = prefs.getString("tailscaleIp", null)
-            val singleToken = prefs.getString("token", "changeme") ?: "changeme"
-            if (singleIp != null && singleIp.isNotEmpty() && !candidates.any { it.first == singleIp }) {
+            val singleIp = prefs.getString("ip", "")?.trim() ?: ""
+            val singleTsIp = prefs.getString("tailscaleIp", "")?.trim() ?: ""
+            val singleToken = prefs.getString("token", "changeme")?.trim() ?: "changeme"
+            if (singleIp.isNotEmpty() && !candidates.any { it.first == singleIp }) {
                 candidates.add(Pair(singleIp, singleToken))
             }
-            if (singleTsIp != null && singleTsIp.isNotEmpty() && singleTsIp != singleIp && !candidates.any { it.first == singleTsIp }) {
+            if (singleTsIp.isNotEmpty() && singleTsIp != singleIp && !candidates.any { it.first == singleTsIp }) {
                 candidates.add(Pair(singleTsIp, singleToken))
             }
         } catch (e: Exception) {}
 
-        if (candidates.isEmpty()) return false
+        if (candidates.isEmpty()) {
+            runOnUiThread {
+                Toast.makeText(applicationContext, "⚠️ Please open FingerUnlock app once to sync setup", Toast.LENGTH_LONG).show()
+            }
+            return false
+        }
 
-        // Parallel race execution across all candidate IPs (LAN, Tailscale, Hotspot)
         val poolSize = candidates.size.coerceAtLeast(1)
         val executor = java.util.concurrent.Executors.newFixedThreadPool(poolSize)
         val cs = java.util.concurrent.ExecutorCompletionService<Boolean>(executor)
@@ -471,8 +475,10 @@ class TransparentAuthActivity : FragmentActivity() {
                     conn.requestMethod = "POST"
                     conn.setRequestProperty("Content-Type", "application/json")
                     conn.setRequestProperty("X-Token", token)
-                    conn.connectTimeout = 2000
-                    conn.readTimeout = 2000
+                    conn.setRequestProperty("Host", "$ip:5599")
+                    conn.setRequestProperty("Connection", "close")
+                    conn.connectTimeout = 2500
+                    conn.readTimeout = 2500
                     conn.doOutput = true
 
                     val json = JSONObject()
@@ -481,7 +487,9 @@ class TransparentAuthActivity : FragmentActivity() {
                     conn.outputStream.use { os ->
                         os.write(json.toString().toByteArray(Charsets.UTF_8))
                     }
-                    conn.responseCode == 200
+                    val resCode = conn.responseCode
+                    conn.disconnect()
+                    resCode == 200
                 } catch (e: Exception) {
                     false
                 }
@@ -491,7 +499,7 @@ class TransparentAuthActivity : FragmentActivity() {
         var success = false
         for (i in candidates.indices) {
             try {
-                val future = cs.poll(2200, java.util.concurrent.TimeUnit.MILLISECONDS)
+                val future = cs.poll(2800, java.util.concurrent.TimeUnit.MILLISECONDS)
                 if (future != null && future.get() == true) {
                     success = true
                     break

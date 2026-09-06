@@ -100,7 +100,17 @@ function App() {
   const ring = useRef(new Animated.Value(0)).current;
   const fcmRef = useRef('');                          // FCM device token (native full-screen path)
 
-  const refresh = async () => setLaptops(await loadLaptops());
+  const autoUnlockedRef = useRef(false);
+
+  const refresh = async () => {
+    const list = await loadLaptops();
+    setLaptops(list);
+    if (list && list.length > 0) {
+      await saveLaptops(list);
+    }
+    return list;
+  };
+
   useEffect(() => { refresh(); }, []);
 
   // Re-check each PC every 3s so a card flips offline->online on its own the
@@ -135,9 +145,10 @@ function App() {
 
   // Tap a laptop card -> fingerprint -> unlock on demand (uses the token-only /unlock).
   async function unlockNow(l) {
+    if (!l) return;
     // If the PC isn't locked, don't send an unlock — just a small toast.
     try {
-      const info = await postTo(l, 'info', {});
+      const info = await postTo(l, 'info', {}, 1500);
       if (info.ok) {
         const j = JSON.parse(await info.text());
         if (j.locked === false) { ToastAndroid.show('PC is already unlocked', ToastAndroid.SHORT); return; }
@@ -149,13 +160,13 @@ function App() {
       let res;
       if (l.pcPub && l.priv && l.pw) {
         // hardened vault: fetch a nonce, send the encrypted password
-        const cr = await postTo(l, 'challenge', {});
+        const cr = await postTo(l, 'challenge', {}, 3000);
         if (!cr.ok) throw new Error(`challenge ${cr.status}`);
         const { nonce } = JSON.parse(await cr.text());
         const { ivHex, ctHex } = encryptPassword(l.pcPub, l.priv, nonce, l.pw);
-        res = await postTo(l, 'approve', { nonce, iv: ivHex, ct: ctHex });
+        res = await postTo(l, 'approve', { nonce, iv: ivHex, ct: ctHex }, 3000);
       } else {
-        res = await postTo(l, 'unlock', {});   // fallback: token-only (PC uses config.ini)
+        res = await postTo(l, 'unlock', {}, 3000);   // fallback: token-only (PC uses config.ini)
       }
       ToastAndroid.show(res.ok ? `Unlock sent to ${l.name || l.machine || l.ip}` : `Failed (${res.status})`, ToastAndroid.SHORT);
     } catch (e) { ToastAndroid.show('Failed: ' + e.message, ToastAndroid.SHORT); }
@@ -214,25 +225,36 @@ function App() {
   }
 
   async function handleResponse(resp) {
-    if (!resp) return;
+    if (!resp) return false;
     const content = resp.notification?.request?.content;
     let d = content?.data || {};
     if (typeof d === 'string') {
       try { d = JSON.parse(d); } catch {}
     }
+    // Ignore notification responses older than 45 seconds on startup
+    const date = resp.notification?.date;
+    if (date && Date.now() - date > 45000) {
+      return false;
+    }
     const machine = d.machine || 'PC';
     const nonce = d.nonce || '';
     if (resp.actionIdentifier === 'yes') {
       await handleUnlock(machine, nonce, 'yes');
+      return true;
     } else if (resp.actionIdentifier === 'no') {
       await handleUnlock(machine, nonce, 'no');
-    } else {
+      return true;
+    } else if (d.type === 'unlock') {
       await handleUnlock(machine, nonce, 'yes');
+      return true;
     }
+    return false;
   }
 
   useEffect(() => {
     (async () => {
+      const list = await refresh();
+
       await Notifications.requestPermissionsAsync();
       await Notifications.setNotificationCategoryAsync('unlock', [
         { identifier: 'yes', buttonTitle: 'Yes, unlock', options: { opensAppToForeground: true } },
@@ -265,7 +287,17 @@ function App() {
         const projectId = Constants?.expoConfig?.extra?.eas?.projectId ?? Constants?.easConfig?.projectId;
         setPushToken((await Notifications.getExpoPushTokenAsync(projectId ? { projectId } : undefined)).data);
       } catch {}
-      handleResponse(await Notifications.getLastNotificationResponseAsync());   // cold-start tap
+      const lastResp = await Notifications.getLastNotificationResponseAsync();
+      const handled = await handleResponse(lastResp);
+
+      // Trigger automatic launch unlock if not handled by a fresh notification tap
+      if (!handled && list && list.length > 0 && !autoUnlockedRef.current) {
+        autoUnlockedRef.current = true;
+        setTimeout(() => {
+          unlockNow(list[0]);
+        }, 350);
+      }
+
       checkForUpdate(false);
     })();
     const recv = Notifications.addNotificationReceivedListener(async (n) => {
