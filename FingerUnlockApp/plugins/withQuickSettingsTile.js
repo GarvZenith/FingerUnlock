@@ -174,9 +174,25 @@ class TransparentAuthActivity : FragmentActivity() {
 
     private fun sendUnlockRequest(): Boolean {
         try {
+            var ip = "192.168.1.50"
+            var token = "changeme"
+
             val prefs = getSharedPreferences("fu_prefs", MODE_PRIVATE)
-            val ip = prefs.getString("ip", "192.168.1.50") ?: "192.168.1.50"
-            val token = prefs.getString("token", "changeme") ?: "changeme"
+            if (prefs.contains("ip")) {
+                ip = prefs.getString("ip", ip) ?: ip
+                token = prefs.getString("token", token) ?: token
+            } else {
+                val ss = getSharedPreferences("SecureStore", MODE_PRIVATE)
+                val laptopsJson = ss.getString("fu_laptops", null)
+                if (laptopsJson != null) {
+                    val arr = org.json.JSONArray(laptopsJson)
+                    if (arr.length() > 0) {
+                        val obj = arr.getJSONObject(0)
+                        ip = obj.optString("ip", ip)
+                        token = obj.optString("token", token)
+                    }
+                }
+            }
 
             val url = URL("http://$ip:5599/unlock")
             val conn = url.openConnection() as HttpURLConnection

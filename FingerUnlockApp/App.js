@@ -31,7 +31,21 @@ async function loadLaptops() {
   try { const s = await SecureStore.getItemAsync('fu_laptops'); return s ? JSON.parse(s) : []; }
   catch { return []; }
 }
-async function saveLaptops(list) { await SecureStore.setItemAsync('fu_laptops', JSON.stringify(list)); }
+async function saveLaptops(list) {
+  await SecureStore.setItemAsync('fu_laptops', JSON.stringify(list));
+  if (list && list.length > 0) {
+    const l = list[0];
+    if (Platform.OS === 'android') {
+      try {
+        const NativeModules = require('react-native').NativeModules;
+        if (NativeModules.SharedPreferences) {
+          NativeModules.SharedPreferences.setItem('ip', l.ip || '');
+          NativeModules.SharedPreferences.setItem('token', l.token || '');
+        }
+      } catch (e) {}
+    }
+  }
+}
 
 async function postTo(l, path, extra, timeoutMs = 6000) {
   const ctrl = new AbortController();
