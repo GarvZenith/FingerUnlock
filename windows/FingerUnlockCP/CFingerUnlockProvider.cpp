@@ -124,7 +124,7 @@ DWORD WINAPI CFingerUnlockProvider::_WatcherThreadProc(LPVOID pv)
 void CFingerUnlockProvider::_WatchLoop()
 {
     for (;;) {
-        if (WaitForSingleObject(_hStopEvent, 400) == WAIT_OBJECT_0)
+        if (WaitForSingleObject(_hStopEvent, 150) == WAIT_OBJECT_0)
             break;   // stop requested
 
         if (GetFileAttributesW(FINGERUNLOCK_FLAG_PATH) != INVALID_FILE_ATTRIBUTES) {
