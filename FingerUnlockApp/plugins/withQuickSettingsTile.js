@@ -310,7 +310,7 @@ class FingerUnlockTileService : TileService() {
 `;
       fs.writeFileSync(path.join(targetDir, 'FingerUnlockTileService.kt'), tileContent, 'utf8');
 
-      // 4. TransparentAuthActivity.kt (Multi-endpoint parallel racing execution)
+      // 4. TransparentAuthActivity.kt (Parallel candidate racing + Offline Biometric Guard)
       const authContent = `package ${packageName}
 
 import android.os.Build
@@ -329,10 +329,12 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 class TransparentAuthActivity : FragmentActivity() {
+    data class Candidate(val url: String, val bodyJson: JSONObject)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Window overlay flags to prevent system bar glitches & allow unlock from lock screen / apps
+        // Set layout flags for translucent overlay activity
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
@@ -346,6 +348,14 @@ class TransparentAuthActivity : FragmentActivity() {
         }
         window.setBackgroundDrawableResource(android.R.color.transparent)
 
+        val candidates = getCandidates()
+        if (candidates.isEmpty()) {
+            Toast.makeText(applicationContext, "⚠️ Please pair laptop in FingerUnlock app", Toast.LENGTH_LONG).show()
+            resetTileDefault()
+            finish()
+            return
+        }
+
         // State 3: AUTHENTICATING
         FingerUnlockTileService.updateState(
             Tile.STATE_ACTIVE,
@@ -358,7 +368,7 @@ class TransparentAuthActivity : FragmentActivity() {
             object : BiometricPrompt.AuthenticationCallback() {
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
                     super.onAuthenticationSucceeded(result)
-                    performUnlock()
+                    performUnlock(candidates)
                 }
 
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
@@ -381,15 +391,15 @@ class TransparentAuthActivity : FragmentActivity() {
         biometricPrompt.authenticate(promptInfo)
     }
 
-    private fun performUnlock() {
+    private fun performUnlock(candidates: List<Candidate>) {
         Thread {
             var success = false
-            for (attempt in 1..3) {
-                if (sendUnlockRequest()) {
+            for (attempt in 1..2) {
+                if (sendUnlockRequest(candidates)) {
                     success = true
                     break
                 }
-                try { Thread.sleep(250) } catch (e: Exception) {}
+                try { Thread.sleep(200) } catch (e: Exception) {}
             }
             runOnUiThread {
                 if (success) {
@@ -427,12 +437,13 @@ class TransparentAuthActivity : FragmentActivity() {
         )
     }
 
-    private fun sendUnlockRequest(): Boolean {
-        val candidates = mutableListOf<Pair<String, String>>()
-
+    private fun getCandidates(): List<Candidate> {
+        val list = mutableListOf<Candidate>()
         try {
             val prefs = getSharedPreferences("fu_prefs", MODE_PRIVATE)
             val laptopsJson = prefs.getString("laptops_json", null)
+            val requestId = "req_" + System.currentTimeMillis() + "_" + (1000..9999).random()
+
             if (laptopsJson != null) {
                 val arr = JSONArray(laptopsJson)
                 for (i in 0 until arr.length()) {
@@ -440,52 +451,51 @@ class TransparentAuthActivity : FragmentActivity() {
                     val mainIp = obj.optString("ip", "").trim()
                     val tsIp = obj.optString("tailscaleIp", "").trim()
                     val token = obj.optString("token", "changeme").trim()
-                    if (mainIp.isNotEmpty()) candidates.add(Pair(mainIp, token))
-                    if (tsIp.isNotEmpty() && tsIp != mainIp) candidates.add(Pair(tsIp, token))
+                    val deviceId = obj.optString("deviceId", "").trim()
+                    val relayUrl = obj.optString("relayUrl", "http://localhost:5590").trim()
+
+                    val body = JSONObject()
+                    body.put("token", token)
+                    body.put("deviceId", deviceId)
+                    body.put("requestId", requestId)
+
+                    if (mainIp.isNotEmpty()) {
+                        list.add(Candidate("http://$mainIp:5599/unlock", body))
+                    }
+                    if (tsIp.isNotEmpty() && tsIp != mainIp) {
+                        list.add(Candidate("http://$tsIp:5599/unlock", body))
+                    }
+                    if (relayUrl.isNotEmpty()) {
+                        list.add(Candidate("$relayUrl/unlock", body))
+                    }
                 }
             }
-            val singleIp = prefs.getString("ip", "")?.trim() ?: ""
-            val singleTsIp = prefs.getString("tailscaleIp", "")?.trim() ?: ""
-            val singleToken = prefs.getString("token", "changeme")?.trim() ?: "changeme"
-            if (singleIp.isNotEmpty() && !candidates.any { it.first == singleIp }) {
-                candidates.add(Pair(singleIp, singleToken))
-            }
-            if (singleTsIp.isNotEmpty() && singleTsIp != singleIp && !candidates.any { it.first == singleTsIp }) {
-                candidates.add(Pair(singleTsIp, singleToken))
-            }
         } catch (e: Exception) {}
+        return list
+    }
 
-        if (candidates.isEmpty()) {
-            runOnUiThread {
-                Toast.makeText(applicationContext, "⚠️ Please open FingerUnlock app once to sync setup", Toast.LENGTH_LONG).show()
-            }
-            return false
-        }
+    private fun sendUnlockRequest(candidates: List<Candidate>): Boolean {
+        if (candidates.isEmpty()) return false
 
         val poolSize = candidates.size.coerceAtLeast(1)
         val executor = java.util.concurrent.Executors.newFixedThreadPool(poolSize)
         val cs = java.util.concurrent.ExecutorCompletionService<Boolean>(executor)
 
         for (candidate in candidates) {
-            val (ip, token) = candidate
             cs.submit {
                 try {
-                    val url = URL("http://$ip:5599/unlock")
+                    val url = URL(candidate.url)
                     val conn = url.openConnection() as HttpURLConnection
                     conn.requestMethod = "POST"
                     conn.setRequestProperty("Content-Type", "application/json")
-                    conn.setRequestProperty("X-Token", token)
-                    conn.setRequestProperty("Host", "$ip:5599")
+                    conn.setRequestProperty("X-Token", candidate.bodyJson.optString("token", ""))
                     conn.setRequestProperty("Connection", "close")
                     conn.connectTimeout = 2500
                     conn.readTimeout = 2500
                     conn.doOutput = true
 
-                    val json = JSONObject()
-                    json.put("token", token)
-
                     conn.outputStream.use { os ->
-                        os.write(json.toString().toByteArray(Charsets.UTF_8))
+                        os.write(candidate.bodyJson.toString().toByteArray(Charsets.UTF_8))
                     }
                     val resCode = conn.responseCode
                     conn.disconnect()

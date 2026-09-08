@@ -1,0 +1,12 @@
+{
+  "name": "fingerunlock-relay",
+  "version": "1.0.0",
+  "description": "Self-hosted secure relay server for FingerUnlock persistent device routing",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

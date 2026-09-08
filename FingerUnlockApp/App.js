@@ -14,6 +14,7 @@ import { genKeyPair, encryptPassword } from './crypto';
 import { showStickyNotification } from './fullscreen';
 
 const PORT = '5599';
+const DEFAULT_RELAY_URL = 'http://localhost:5590';
 const TAILSCALE_PLAY = 'https://play.google.com/store/apps/details?id=com.tailscale.ipn';
 
 try {
@@ -40,8 +41,10 @@ async function saveLaptops(list) {
         NativeModules.SharedPreferences.setItem('laptops_json', JSON.stringify(list || []));
         if (list && list.length > 0) {
           const l = list[0];
+          NativeModules.SharedPreferences.setItem('deviceId', l.deviceId || '');
           NativeModules.SharedPreferences.setItem('ip', l.ip || '');
           NativeModules.SharedPreferences.setItem('tailscaleIp', l.tailscaleIp || '');
+          NativeModules.SharedPreferences.setItem('relayUrl', l.relayUrl || DEFAULT_RELAY_URL);
           NativeModules.SharedPreferences.setItem('token', l.token || '');
         }
       }
@@ -49,43 +52,104 @@ async function saveLaptops(list) {
   }
 }
 
-async function postTo(l, path, extra, timeoutMs = 6000) {
-  const ips = [];
-  if (l && l.ip) ips.push(l.ip);
-  if (l && l.tailscaleIp && l.tailscaleIp !== l.ip) ips.push(l.tailscaleIp);
-  if (ips.length === 0) throw new Error('No IP configured');
+// Parallel Transport Racing Manager (LAN, Hotspot, Relay Server, Tailscale)
+async function postTo(l, path, extra = {}, timeoutMs = 4000) {
+  if (!l) throw new Error('No laptop configuration provided');
+
+  const requestId = `req_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const payload = { ...extra, token: l.token || '', deviceId: l.deviceId || '', requestId };
+
+  const endpoints = [];
+
+  // 1. Direct Local LAN Endpoint
+  if (l.ip) {
+    endpoints.push({ type: 'lan', url: `http://${l.ip}:${PORT}/${path}` });
+  }
+
+  // 2. Phone Hotspot Gateways
+  endpoints.push({ type: 'hotspot', url: `http://192.168.43.1:${PORT}/${path}` });
+  endpoints.push({ type: 'hotspot', url: `http://192.168.49.1:${PORT}/${path}` });
+
+  // 3. Tailscale Legacy Fallback Endpoint
+  if (l.tailscaleIp && l.tailscaleIp !== l.ip) {
+    endpoints.push({ type: 'tailscale', url: `http://${l.tailscaleIp}:${PORT}/${path}` });
+  }
+
+  // 4. Self-Hosted Secure Relay Endpoint
+  const relayBaseUrl = l.relayUrl || DEFAULT_RELAY_URL;
+  endpoints.push({ type: 'relay', url: `${relayBaseUrl}/${path}` });
+
+  // Deduplicate endpoints by URL
+  const uniqueEndpoints = [];
+  const seen = new Set();
+  for (const ep of endpoints) {
+    if (!seen.has(ep.url)) {
+      seen.add(ep.url);
+      uniqueEndpoints.push(ep);
+    }
+  }
 
   return new Promise((resolve, reject) => {
     let completed = 0;
     let resolved = false;
     const errors = [];
 
-    ips.forEach((ip) => {
+    uniqueEndpoints.forEach((ep) => {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), timeoutMs);
-      fetch(`http://${ip}:${PORT}/${path}`, {
+      fetch(ep.url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...extra, token: l ? l.token : '' }),
+        headers: { 'Content-Type': 'application/json', 'X-Token': l.token || '' },
+        body: JSON.stringify(payload),
         signal: ctrl.signal,
       })
         .then((res) => {
           clearTimeout(t);
-          if (!resolved) {
+          if (res.ok && !resolved) {
             resolved = true;
             resolve(res);
+          } else if (!resolved) {
+            completed++;
+            if (completed === uniqueEndpoints.length) {
+              reject(new Error(`All transports failed (${res.status})`));
+            }
           }
         })
         .catch((err) => {
           clearTimeout(t);
           errors.push(err);
           completed++;
-          if (completed === ips.length && !resolved) {
-            reject(errors[0] || new Error('Connection failed'));
+          if (completed === uniqueEndpoints.length && !resolved) {
+            reject(errors[0] || new Error('Connection failed on all transports'));
           }
         });
     });
   });
+}
+
+// Fast Reachability Validation for Offline Biometric Guard
+async function isLaptopReachable(l) {
+  if (!l) return false;
+  try {
+    const res = await postTo(l, 'info', {}, 1800);
+    return res.ok;
+  } catch (e) {
+    // If local/direct pings fail, check self-hosted relay presence endpoint
+    if (l.deviceId) {
+      try {
+        const relayBaseUrl = l.relayUrl || DEFAULT_RELAY_URL;
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 1500);
+        const r = await fetch(`${relayBaseUrl}/status/${l.deviceId}`, { signal: ctrl.signal });
+        clearTimeout(t);
+        if (r.ok) {
+          const j = await r.json();
+          return !!j.online;
+        }
+      } catch (e2) {}
+    }
+    return false;
+  }
 }
 
 function App() {
@@ -97,6 +161,7 @@ function App() {
   const [status, setStatus] = useState({});         // machine/online per laptop id
   const [tick, setTick] = useState(0);              // drives periodic online re-poll
   const [incoming, setIncoming] = useState(null);   // {machine, nonce} while the call-style screen rings
+  const [qrInput, setQrInput] = useState('');       // QR JSON paste string
   const ring = useRef(new Animated.Value(0)).current;
   const fcmRef = useRef('');                          // FCM device token (native full-screen path)
 
@@ -113,8 +178,7 @@ function App() {
 
   useEffect(() => { refresh(); }, []);
 
-  // Re-check each PC every 3s so a card flips offline->online on its own the
-  // moment the PC is reachable again (e.g. after a reboot at the logon screen).
+  // Re-check each PC every 3s so a card flips offline->online on its own
   useEffect(() => {
     const id = setInterval(() => setTick((t) => t + 1), 3000);
     return () => clearInterval(id);
@@ -131,10 +195,16 @@ function App() {
       await Notifications.dismissAllNotificationsAsync();
       return;
     }
+
+    // Offline Biometric Guard
+    const reachable = await isLaptopReachable(lap);
+    if (!reachable) {
+      ToastAndroid.show('PC is Offline — Cannot Unlock', ToastAndroid.SHORT);
+      return;
+    }
+
     const r = await LocalAuthentication.authenticateAsync({ promptMessage: `Unlock ${lap.name || lap.machine || 'laptop'}` });
     if (!r.success) return;
-    // If this laptop is set up for the encrypted vault, send the password blob;
-    // otherwise fall back to the plain nonce approval (config.ini on the PC).
     let extra = { nonce };
     if (lap.pcPub && lap.priv && lap.pw) {
       try { const { ivHex, ctHex } = encryptPassword(lap.pcPub, lap.priv, nonce, lap.pw); extra = { nonce, iv: ivHex, ct: ctHex }; } catch {}
@@ -146,33 +216,32 @@ function App() {
   // Tap a laptop card -> fingerprint -> unlock on demand (uses the token-only /unlock).
   async function unlockNow(l) {
     if (!l) return;
-    // If the PC isn't locked, don't send an unlock — just a small toast.
-    try {
-      const info = await postTo(l, 'info', {}, 1500);
-      if (info.ok) {
-        const j = JSON.parse(await info.text());
-        if (j.locked === false) { ToastAndroid.show('PC is already unlocked', ToastAndroid.SHORT); return; }
-      }
-    } catch {}
+
+    // Offline Biometric Guard: Check reachability before opening biometric prompt!
+    const reachable = await isLaptopReachable(l);
+    if (!reachable) {
+      ToastAndroid.show('PC is Offline — Cannot Unlock', ToastAndroid.SHORT);
+      return;
+    }
+
     const r = await LocalAuthentication.authenticateAsync({ promptMessage: `Unlock ${l.name || l.machine || 'laptop'}` });
     if (!r.success) return;
+
     try {
       let res;
       if (l.pcPub && l.priv && l.pw) {
-        // hardened vault: fetch a nonce, send the encrypted password
         const cr = await postTo(l, 'challenge', {}, 3000);
         if (!cr.ok) throw new Error(`challenge ${cr.status}`);
         const { nonce } = JSON.parse(await cr.text());
         const { ivHex, ctHex } = encryptPassword(l.pcPub, l.priv, nonce, l.pw);
         res = await postTo(l, 'approve', { nonce, iv: ivHex, ct: ctHex }, 3000);
       } else {
-        res = await postTo(l, 'unlock', {}, 3000);   // fallback: token-only (PC uses config.ini)
+        res = await postTo(l, 'unlock', {}, 3000);   // fallback: token-only
       }
       ToastAndroid.show(res.ok ? `Unlock sent to ${l.name || l.machine || l.ip}` : `Failed (${res.status})`, ToastAndroid.SHORT);
     } catch (e) { ToastAndroid.show('Failed: ' + e.message, ToastAndroid.SHORT); }
   }
 
-  // ---- direct fingerprint unlock trigger (no ringing call UI) ----
   function dropCall() { try { notifee.cancelAllNotifications(); } catch {} }
   async function showIncoming(machine, nonce) {
     dropCall();
@@ -180,7 +249,7 @@ function App() {
   }
   function closeIncoming() { dropCall(); }
 
-  // Register this phone's FCM token with every paired laptop (native full-screen path).
+  // Register this phone's FCM token with every paired laptop
   async function registerFcmAll(list) {
     try {
       const tok = fcmRef.current || (await messaging().getToken());
@@ -231,14 +300,13 @@ function App() {
     if (typeof d === 'string') {
       try { d = JSON.parse(d); } catch {}
     }
-    // Ignore notification responses older than 45 seconds on startup
     const date = resp.notification?.date;
     if (date && Date.now() - date > 45000) {
       return false;
     }
     const machine = d.machine || 'PC';
     const nonce = d.nonce || '';
-    if (resp.actionIdentifier === 'yes') {
+    if (resp.actionIdentifier === 'yes' || resp.actionIdentifier === 'default' || !resp.actionIdentifier) {
       await handleUnlock(machine, nonce, 'yes');
       return true;
     } else if (resp.actionIdentifier === 'no') {
@@ -302,9 +370,9 @@ function App() {
     })();
     const recv = Notifications.addNotificationReceivedListener(async (n) => {
       const dd = n.request?.content?.data || {};
-      if (dd.type === 'cancel') { Notifications.dismissAllNotificationsAsync(); closeIncoming(); }   // PC unlocked/cancelled -> stop ringing
+      if (dd.type === 'cancel') { Notifications.dismissAllNotificationsAsync(); closeIncoming(); }
       else if (dd.type === 'unlock') {
-        showIncoming(dd.machine, dd.nonce);                                                           // foreground -> ring immediately
+        showIncoming(dd.machine, dd.nonce);
         try { await showCall(dd); } catch {}
       }
     });
@@ -312,24 +380,20 @@ function App() {
     return () => { recv.remove(); resp.remove(); };
   }, []);
 
-  // ---- FCM + Notifee (native full-screen "call") ----
+  // ---- FCM + Notifee ----
   useEffect(() => {
     let unMsg, unFg, unTok;
     (async () => {
       try {
         try { await messaging().requestPermission(); } catch {}
         await registerFcmAll();
-        // Phase 3b: start the sticky foreground service so the process stays
-        // alive in the background and FCM messages arrive instantly.
         await showStickyNotification();
-        // launched by tapping the full-screen unlock notification?
         try {
           const initial = await notifee.getInitialNotification();
           const d = initial?.notification?.data;
           if (d && d.type === 'unlock') showIncoming(d.machine, d.nonce);
         } catch {}
 
-        // foreground FCM data message -> ring in-app
         try {
           unMsg = messaging().onMessage(async (m) => {
             const d = m.data || {};
@@ -338,7 +402,6 @@ function App() {
           });
         } catch (e) { console.log('FCM onMessage listener error:', e); }
 
-        // tapping the full-screen notification while the app is alive
         try {
           unFg = notifee.onForegroundEvent(({ type, detail }) => {
             if (type === EventType.PRESS || type === EventType.ACTION_PRESS) {
@@ -348,76 +411,124 @@ function App() {
           });
         } catch (e) { console.log('Notifee onForegroundEvent listener error:', e); }
 
-        // FCM token can rotate — re-register when it does
         try {
-          unTok = messaging().onTokenRefresh((t) => { fcmRef.current = t; registerFcmAll(); });
-        } catch (e) { console.log('FCM onTokenRefresh listener error:', e); }
-      } catch (e) {
-        console.log('FCM/Notifee init error:', e);
-      }
+          unTok = messaging().onTokenRefresh(async (tok) => {
+            fcmRef.current = tok;
+            await registerFcmAll();
+          });
+        } catch {}
+      } catch (e) { console.log('FCM/Notifee init error:', e); }
     })();
-    return () => { try { unMsg && unMsg(); } catch {} try { unFg && unFg(); } catch {} try { unTok && unTok(); } catch {} };
+    return () => {
+      try { if (unMsg) unMsg(); if (unFg) unFg(); if (unTok) unTok(); } catch {}
+    };
   }, []);
 
-  // ---- ping each laptop for name + online status (homepage) ----
+  // ---- poll status ----
   useEffect(() => {
-    let alive = true;
+    if (laptops.length === 0) return;
+    let cancelled = false;
     (async () => {
-      for (const l of laptops) {
+      const next = {};
+      await Promise.all(laptops.map(async (l) => {
         try {
-          const res = await postTo(l, 'info', {}, 2500);
-          if (!alive) return;
+          const res = await postTo(l, 'info', {}, 2000);
           if (res.ok) {
             const j = JSON.parse(await res.text());
-            setStatus((s) => ({ ...s, [l.id]: { online: true, machine: j.machine, user: j.user } }));
-          } else setStatus((s) => ({ ...s, [l.id]: { online: false } }));
-        } catch { if (alive) setStatus((s) => ({ ...s, [l.id]: { online: false } })); }
-      }
+            next[l.id] = { online: true, machine: j.machine, user: j.user, locked: j.locked, paired: j.paired };
+            if (j.machine && j.machine !== l.machine) {
+              const updated = laptops.map((x) => x.id === l.id ? { ...x, machine: j.machine } : x);
+              saveLaptops(updated); setLaptops(updated);
+            }
+          } else next[l.id] = { online: false };
+        } catch { next[l.id] = { online: false }; }
+      }));
+      if (!cancelled) setStatus(next);
     })();
-    return () => { alive = false; };
-  }, [laptops, screen, tick]);
+    return () => { cancelled = true; };
+  }, [tick, laptops.length]);
 
-  // ---- edit flow ----
-  const isDirty = () => draft && orig && JSON.stringify(draft) !== JSON.stringify(orig);
+  // ---- edit screen helpers ----
   function openEdit(lap) {
-    const d = lap || { id: String(Date.now()), name: '', ip: '', token: '', machine: '', pw: '' };
-    setDraft(d); setOrig(lap || d); setScreen('edit');
+    setOrig(lap);
+    setDraft(lap ? { ...lap } : { id: String(Date.now()), deviceId: '', name: '', ip: '', tailscaleIp: '', relayUrl: DEFAULT_RELAY_URL, token: '', pw: '' });
+    setQrInput('');
+    setScreen('edit');
   }
+  function leaveEdit() { setDraft(null); setOrig(null); setScreen(laptops.length === 0 ? 'settings' : 'home'); }
   async function commitDraft() {
+    if (!draft.ip && !draft.deviceId) { Alert.alert('Missing field', 'Enter a laptop IP or Device ID'); return; }
     const list = await loadLaptops();
-    const i = list.findIndex((l) => l.id === draft.id);
-    if (i >= 0) list[i] = draft; else list.push(draft);
-    await saveLaptops(list); await refresh();
-    setDraft(null); setOrig(null); setScreen('settings');
-  }
-  function leaveEdit() {
-    if (draft && orig && draft !== orig && isDirty()) {
-      Alert.alert('Save changes?', '', [
-        { text: 'Discard', style: 'destructive', onPress: () => { setDraft(null); setScreen('settings'); } },
-        { text: 'Save', onPress: commitDraft },
-      ], { cancelable: true, onDismiss: () => { setDraft(null); setScreen('settings'); } });   // dismiss = discard
-    } else { setDraft(null); setScreen('settings'); }
+    const idx = list.findIndex((l) => l.id === draft.id);
+    if (idx >= 0) list[idx] = draft; else list.push(draft);
+    await saveLaptops(list);
+    await refresh();
+    registerFcmAll(list);
+    leaveEdit();
   }
   async function detect() {
+    if (!draft?.ip) { Alert.alert('Need IP', 'Enter the laptop IP first'); return; }
     try {
-      const res = await postTo(draft, 'info', {});
-      if (res.ok) { const j = JSON.parse(await res.text());
-        setDraft((d) => ({ ...d, machine: j.machine, name: d.name || j.machine })); }
-      else Alert.alert('Detect', `Failed (${res.status}) — check IP/token`);
-    } catch (e) { Alert.alert('Detect', e.message); }
+      const r = await postTo(draft, 'info', {});
+      if (r.ok) {
+        const j = JSON.parse(await r.text());
+        setDraft({ ...draft, machine: j.machine || draft.machine, deviceId: j.deviceId || draft.deviceId });
+        Alert.alert('Detected', `Machine: ${j.machine || 'OK'} (User: ${j.user || 'none'})`);
+      } else Alert.alert('Failed', `HTTP ${r.status}`);
+    } catch (e) { Alert.alert('Failed', e.message); }
   }
   async function pairDraft() {
+    if (!draft?.ip) { Alert.alert('Need IP', 'Enter the laptop IP first'); return; }
     try {
-      let d = draft;
-      if (!d.priv || !d.pub) { const kp = genKeyPair(); d = { ...d, priv: kp.privHex, pub: kp.pubHex }; }
-      await postTo(d, 'register', { pushToken });               // Expo push token (fallback path)
-      try { const ft = fcmRef.current || (await messaging().getToken()); fcmRef.current = ft; await postTo(d, 'registerfcm', { fcmToken: ft }); } catch {}   // FCM token (full-screen path)
-      const res = await postTo(d, 'pair2', { phonePub: d.pub }); // ECDH key exchange (Stage 2)
-      if (res.ok) { const j = JSON.parse(await res.text()); d = { ...d, pcPub: j.pcPub }; }
-      setDraft(d);
-      Alert.alert('Pair', res.ok ? '✅ Paired (push + encryption). Tap Save changes.' : `Push ok, key exchange failed (${res.status})`);
-    } catch (e) { Alert.alert('Pair', e.message); }
+      const { pubHex, privHex } = genKeyPair();
+      const r = await postTo(draft, 'pair2', { phonePub: pubHex });
+      if (!r.ok) { Alert.alert('Pair failed', `HTTP ${r.status}`); return; }
+      const { pcPub, deviceId } = JSON.parse(await r.text());
+      if (!pcPub) { Alert.alert('Pair failed', 'No public key returned'); return; }
+      const updated = { ...draft, pcPub, priv: privHex, deviceId: deviceId || draft.deviceId };
+      setDraft(updated);
+      Alert.alert('Paired!', 'Hardened vault encryption enabled.');
+    } catch (e) { Alert.alert('Pair error', e.message); }
   }
+
+  function handleImportQr() {
+    if (!qrInput || !qrInput.trim()) {
+      Alert.alert('QR Error', 'Paste or enter valid QR pairing JSON data');
+      return;
+    }
+    try {
+      const data = JSON.parse(qrInput.trim());
+      const updated = {
+        id: orig?.id || String(Date.now()),
+        deviceId: data.deviceId || draft.deviceId || '',
+        name: data.name || draft.name || '',
+        ip: data.ip || draft.ip || '',
+        tailscaleIp: data.tailscaleIp || draft.tailscaleIp || '',
+        relayUrl: data.relayUrl || draft.relayUrl || DEFAULT_RELAY_URL,
+        token: data.token || draft.token || '',
+        pw: draft.pw || '',
+        pcPub: data.pcPub || draft.pcPub || ''
+      };
+      setDraft(updated);
+      Alert.alert('QR Paired!', `Laptop "${updated.name || updated.deviceId}" configuration imported.`);
+    } catch (e) {
+      Alert.alert('Invalid QR JSON', e.message);
+    }
+  }
+
+  function declineIncoming() {
+    if (incoming?.nonce && laptops.length > 0) {
+      handleUnlock(incoming.machine, incoming.nonce, 'no');
+    }
+    closeIncoming();
+  }
+  function acceptIncoming() {
+    if (incoming?.nonce && laptops.length > 0) {
+      handleUnlock(incoming.machine, incoming.nonce, 'yes');
+    }
+    closeIncoming();
+  }
+
   async function removeLaptop(id) {
     const list = (await loadLaptops()).filter((l) => l.id !== id);
     await saveLaptops(list); await refresh();
@@ -479,12 +590,29 @@ function App() {
       <ScrollView contentContainerStyle={styles.c}>
         <Text style={styles.h}>{orig?.name || orig?.machine ? 'Edit laptop' : 'Add laptop'}</Text>
 
+        <Text style={styles.label}>📷 1-Time QR Pairing (Paste QR Data)</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
+          <TextInput style={[styles.input, { flex: 1, marginRight: 8 }]} value={qrInput} onChangeText={setQrInput}
+            autoCapitalize="none" placeholder='Paste QR JSON string' placeholderTextColor="#889" />
+          <TouchableOpacity style={[styles.btnAlt, { marginTop: 0, paddingHorizontal: 12 }]} onPress={handleImportQr}>
+            <Text style={styles.btnAltText}>Pair QR</Text>
+          </TouchableOpacity>
+        </View>
+
         <Text style={styles.label}>Name (optional)</Text>
         <TextInput style={styles.input} value={draft.name} onChangeText={(v) => setDraft({ ...draft, name: v })} placeholder="My laptop" placeholderTextColor="#889" />
 
-        <Text style={styles.label}>Laptop IP</Text>
+        <Text style={styles.label}>Device ID (Stable Identity)</Text>
+        <TextInput style={styles.input} value={draft.deviceId || ''} onChangeText={(v) => setDraft({ ...draft, deviceId: v })}
+          autoCapitalize="none" placeholder="FU-LAPTOP-XXXXXX" placeholderTextColor="#889" />
+
+        <Text style={styles.label}>Laptop Local IP</Text>
         <TextInput style={styles.input} value={draft.ip} onChangeText={(v) => setDraft({ ...draft, ip: v })}
-          autoCapitalize="none" keyboardType="numbers-and-punctuation" placeholder="192.168.x.x or Tailscale IP" placeholderTextColor="#889" />
+          autoCapitalize="none" keyboardType="numbers-and-punctuation" placeholder="192.168.x.x or Hotspot IP" placeholderTextColor="#889" />
+
+        <Text style={styles.label}>Self-Hosted Relay Server URL</Text>
+        <TextInput style={styles.input} value={draft.relayUrl || DEFAULT_RELAY_URL} onChangeText={(v) => setDraft({ ...draft, relayUrl: v })}
+          autoCapitalize="none" placeholder="http://relay.yourdomain.com:5590" placeholderTextColor="#889" />
 
         <Text style={styles.label}>Token</Text>
         <TextInput style={styles.input} value={draft.token} onChangeText={(v) => setDraft({ ...draft, token: v })}
@@ -514,8 +642,8 @@ function App() {
         {laptops.map((l) => (
           <View key={l.id} style={styles.row}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.rowName}>{l.name || l.machine || l.ip}</Text>
-              <Text style={styles.dim}>{l.ip}</Text>
+              <Text style={styles.rowName}>{l.name || l.machine || l.ip || l.deviceId}</Text>
+              <Text style={styles.dim}>{l.ip || l.deviceId}</Text>
             </View>
             <TouchableOpacity onPress={() => openEdit(l)}><Text style={styles.icon}>✏️</Text></TouchableOpacity>
             <TouchableOpacity onPress={() => Alert.alert('Remove', l.name || l.ip, [{ text: 'Cancel' }, { text: 'Remove', style: 'destructive', onPress: () => removeLaptop(l.id) }])}>
@@ -523,7 +651,7 @@ function App() {
           </View>
         ))}
         <TouchableOpacity style={styles.btn} onPress={() => openEdit(null)}><Text style={styles.btnText}>+ Add laptop</Text></TouchableOpacity>
-        <TouchableOpacity style={styles.btnAlt} onPress={() => Linking.openURL(TAILSCALE_PLAY)}><Text style={styles.btnAltText}>Install Tailscale (internet unlock)</Text></TouchableOpacity>
+        <TouchableOpacity style={styles.btnAlt} onPress={() => Linking.openURL(TAILSCALE_PLAY)}><Text style={styles.btnAltText}>Install Tailscale (legacy path)</Text></TouchableOpacity>
         <TouchableOpacity style={styles.btnAlt} onPress={() => checkForUpdate(true)}><Text style={styles.btnAltText}>Check for update</Text></TouchableOpacity>
         <TouchableOpacity style={styles.btnGhost} onPress={() => setScreen('home')}><Text style={styles.btnGhostText}>Back</Text></TouchableOpacity>
       </ScrollView>
@@ -548,7 +676,7 @@ function App() {
           <TouchableOpacity key={l.id} style={styles.card} onPress={() => unlockNow(l)}>
             <View style={[styles.dot, { backgroundColor: st.online ? '#37d67a' : '#666' }]} />
             <View style={{ flex: 1 }}>
-              <Text style={styles.cardName}>{l.name || st.machine || l.machine || l.ip}</Text>
+              <Text style={styles.cardName}>{l.name || st.machine || l.machine || l.ip || l.deviceId}</Text>
               <Text style={styles.dim}>{st.machine || l.machine || ''}{st.user ? ` · ${st.user}` : ''}</Text>
               <Text style={styles.dim}>{st.online ? 'connected · tap to unlock' : 'offline'}</Text>
             </View>
@@ -577,63 +705,27 @@ const styles = StyleSheet.create({
   dim: { color: '#889', fontSize: 13, marginTop: 2 },
   btn: { backgroundColor: '#3b6ef5', borderRadius: 12, paddingVertical: 14, alignItems: 'center', marginTop: 18 },
   btnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
-  btnAlt: { borderColor: '#3b6ef5', borderWidth: 1, borderRadius: 12, paddingVertical: 12, alignItems: 'center', marginTop: 10 },
+  btnAlt: { backgroundColor: '#252c40', borderRadius: 12, paddingVertical: 12, alignItems: 'center', marginTop: 10 },
   btnAltText: { color: '#9ab6ff', fontSize: 14, fontWeight: '600' },
-  btnGhost: { paddingVertical: 12, alignItems: 'center', marginTop: 8 },
+  btnGhost: { paddingVertical: 14, alignItems: 'center', marginTop: 10 },
   btnGhostText: { color: '#889', fontSize: 15 },
-
-  // call-style incoming screen
-  ringWrap: { flex: 1, backgroundColor: '#0b0e1a', alignItems: 'center', justifyContent: 'space-between', paddingTop: 84, paddingBottom: 56 },
-  ringTop: { color: '#8aa0d0', fontSize: 14, letterSpacing: 3, fontWeight: '700' },
-  ringCenter: { width: 240, height: 240, alignItems: 'center', justifyContent: 'center' },
-  halo: { position: 'absolute', width: 150, height: 150, borderRadius: 75, backgroundColor: '#3b6ef5' },
-  avatar: { width: 132, height: 132, borderRadius: 66, backgroundColor: '#151b30', alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: '#3b6ef5' },
-  avatarTxt: { color: '#cfe0ff', fontSize: 58, fontWeight: '700' },
-  ringName: { color: '#fff', fontSize: 30, fontWeight: '700', marginTop: 14 },
-  ringSub: { color: '#8892b0', fontSize: 15, marginTop: 8 },
-  ringHint: { color: '#6b7699', fontSize: 13, marginTop: 4 },
-  ringBottom: { width: 300 },
-  ringBtns: { flexDirection: 'row', justifyContent: 'space-between' },
-  ringBtn: { width: 82, height: 82, borderRadius: 41, alignItems: 'center', justifyContent: 'center' },
-  decline: { backgroundColor: '#e5484d' },
-  accept: { backgroundColor: '#30a46c' },
-  ringBtnIcon: { fontSize: 34, color: '#fff' },
-  ringLabels: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 12 },
-  ringLbl: { color: '#99a', fontSize: 14, width: 82, textAlign: 'center' },
+  ringWrap: { flex: 1, backgroundColor: '#0b0d19', padding: 24, paddingTop: 60, justifyContent: 'space-between' },
+  ringTop: { color: '#37d67a', fontSize: 13, fontWeight: '700', letterSpacing: 1.5, textAlign: 'center' },
+  ringCenter: { width: 140, height: 140, alignItems: 'center', justifyContent: 'center', marginVertical: 30 },
+  halo: { position: 'absolute', width: 140, height: 140, borderRadius: 70, backgroundColor: '#3b6ef5' },
+  avatar: { width: 100, height: 100, borderRadius: 50, backgroundColor: '#1f2740', alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: '#3b6ef5' },
+  avatarTxt: { color: '#fff', fontSize: 36, fontWeight: '700' },
+  ringName: { color: '#fff', fontSize: 26, fontWeight: '700', marginTop: 12 },
+  ringSub: { color: '#889', fontSize: 14, marginTop: 6 },
+  ringHint: { color: '#37d67a', fontSize: 14, fontWeight: '600', marginTop: 18 },
+  ringBottom: { marginBottom: 30 },
+  ringBtns: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center' },
+  ringBtn: { width: 72, height: 72, borderRadius: 36, alignItems: 'center', justifyContent: 'center' },
+  decline: { backgroundColor: '#e53935' },
+  accept: { backgroundColor: '#43a047' },
+  ringBtnIcon: { color: '#fff', fontSize: 30, fontWeight: '700' },
+  ringLabels: { flexDirection: 'row', justifyContent: 'space-around', marginTop: 10 },
+  ringLbl: { color: '#aab', fontSize: 13 },
 });
 
-class ErrorBoundary extends Component {
-  state = { hasError: false, error: null };
-  static getDerivedStateFromError(error) {
-    return { hasError: true, error };
-  }
-  componentDidCatch(error, errorInfo) {
-    console.log('App Error:', error, errorInfo);
-  }
-  render() {
-    if (this.state.hasError) {
-      return (
-        <View style={{ flex: 1, backgroundColor: '#0f1220', padding: 24, justifyContent: 'center', alignItems: 'center' }}>
-          <Text style={{ color: '#ff6b6b', fontSize: 22, fontWeight: '700', marginBottom: 12 }}>FingerUnlock Error</Text>
-          <Text style={{ color: '#aab', fontSize: 14, textAlign: 'center', marginBottom: 20 }}>
-            {this.state.error?.toString() || 'An error occurred during app startup.'}
-          </Text>
-          <TouchableOpacity
-            style={{ backgroundColor: '#3b6ef5', paddingHorizontal: 20, paddingVertical: 12, borderRadius: 10 }}
-            onPress={() => this.setState({ hasError: false, error: null })}>
-            <Text style={{ color: '#fff', fontWeight: '700' }}>Retry</Text>
-          </TouchableOpacity>
-        </View>
-      );
-    }
-    return this.props.children;
-  }
-}
-
-export default function AppWrapper() {
-  return (
-    <ErrorBoundary>
-      <App />
-    </ErrorBoundary>
-  );
-}
+export default App;

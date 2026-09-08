@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.WebSockets;
 using System.Runtime.InteropServices;
 using System.ServiceProcess;
 using System.Text;
@@ -8,17 +9,12 @@ using FirebaseAdmin;
 using FirebaseAdmin.Messaging;
 using Google.Apis.Auth.OAuth2;
 
-// FingerUnlock push service.
+// FingerUnlock push & relay service.
 // Runs two ways from the same exe:
-//   * Windows Service (LocalSystem, auto-start, launched with "--service") — it
-//     is alive at the cold-boot logon screen, before anyone logs in. Lock /
-//     logon / logoff are detected via WTS session notifications (OnSessionChange),
-//     which is the only mechanism that works in session 0.
-//   * Console app (dev/test: `dotnet run`) — unchanged from before: lock is
-//     detected via SystemEvents.SessionSwitch.
-// On lock (or at cold boot) it pushes the phone a Yes/No notification; on approval
-// (or a direct /unlock) it writes unlock.flag, which the credential provider uses
-// to UNLOCK (post-login) or LOG IN (cold boot) with the account in config.ini.
+//   * Windows Service (LocalSystem, auto-start, launched with "--service")
+//   * Console app (dev/test: `dotnet run` or `--pair-qr`)
+// Features persistent outbound Relay WebSocket connection, automatic Device ID,
+// idempotency caching, and HTTP server on port 5599.
 
 static class Program
 {
@@ -42,6 +38,8 @@ static class Program
     static string _pushToken = "";        // Expo push token (legacy path)
     static string _fcmToken = "";         // FCM device token (native full-screen path, Step B)
     static bool   _fcmReady = false;      // Firebase Admin initialised?
+    static string _deviceId = "";
+    static string _relayUrl = "ws://localhost:5590";
 
     static void Main(string[] args)
     {
@@ -51,7 +49,43 @@ static class Program
             ServiceBase.Run(new FuService());   // blocks until the SCM stops us
             return;
         }
+
+        if (args.Length > 0 && args[0].Equals("--pair-qr", StringComparison.OrdinalIgnoreCase))
+        {
+            LoadConfig();
+            Crypto.Load();
+            PrintPairingJson();
+            return;
+        }
+
         RunConsole();
+    }
+
+    static void PrintPairingJson()
+    {
+        var pairData = new
+        {
+            deviceId = _deviceId,
+            name = Environment.MachineName,
+            ip = GetLocalIpAddress(),
+            port = _port,
+            token = _token,
+            relayUrl = _relayUrl,
+            pcPub = Crypto.PublicKeyHex()
+        };
+        Console.WriteLine(JsonSerializer.Serialize(pairData));
+    }
+
+    static string GetLocalIpAddress()
+    {
+        try
+        {
+            using var socket = new System.Net.Sockets.Socket(System.Net.Sockets.AddressFamily.InterNetwork, System.Net.Sockets.SocketType.Dgram, 0);
+            socket.Connect("8.8.8.8", 65530);
+            var endPoint = socket.LocalEndPoint as IPEndPoint;
+            return endPoint?.Address.ToString() ?? "192.168.1.50";
+        }
+        catch { return "192.168.1.50"; }
     }
 
     // ---- console / dev mode (unchanged detection: SessionSwitch) --------------
@@ -66,7 +100,8 @@ static class Program
             else if (e.Reason == SessionSwitchReason.SessionUnlock) OnUnlocked();
         };
         if (!StartHttp()) return;
-        Log($"Console mode on :{_port}. Phone token {(_pushToken.Length > 0 ? "SET" : "NOT set")}. Waiting for lock...");
+        RelayClient.Start();
+        Log($"Console mode on :{_port}. Device ID {_deviceId}. Relay: {_relayUrl}. Waiting for lock...");
         Thread.Sleep(Timeout.Infinite);
     }
 
@@ -86,15 +121,14 @@ static class Program
             Crypto.Load();
             InitFirebase();
             StartHttp();
-            // At boot we sit at the logon screen with no interactive user -> treat
-            // as locked and ring the phone ONCE (retry while the network comes up).
+            RelayClient.Start();
+
             bool atLogon = CurrentConsoleUser().Length == 0;
-            Log($"Service started on :{_port}. atLogon={atLogon}. Phone token {(_pushToken.Length > 0 ? "SET" : "NOT set")}.");
+            Log($"Service started on :{_port}. Device ID {_deviceId}. atLogon={atLogon}.");
             if (atLogon) OnLocked(retry: true);
             else _locked = false;
         }
         protected override void OnStop() => Log("Service stopping.");
-        // Powering off / restarting: never ring the phone during teardown.
         protected override void OnShutdown()
         {
             _shuttingDown = true;
@@ -108,16 +142,12 @@ static class Program
                 case SessionChangeReason.SessionLock:    OnLocked(false); break;
                 case SessionChangeReason.SessionUnlock:
                 case SessionChangeReason.SessionLogon:   OnUnlocked();    break;
-                case SessionChangeReason.SessionLogoff:  _locked = true;  break;  // back at logon screen, but DON'T push (this also fires on restart/shutdown)
+                case SessionChangeReason.SessionLogoff:  _locked = true;  break;  // back at logon screen, but DON'T push
             }
         }
     }
 
     // ---- shared lock/unlock logic --------------------------------------------
-    // Sends exactly ONE unlock push per lock. Idempotent: if we're already locked
-    // with a push pending, extra lock events (which Windows fires a couple of times
-    // around the logon screen at boot) do NOT create duplicate notifications.
-    // retry=true -> keep trying every 2s while the network/Tailscale comes up (cold boot).
     static void OnLocked(bool retry)
     {
         string nonce;
@@ -156,7 +186,6 @@ static class Program
         if (had && !_shuttingDown) { SendPush(false, ""); Log("UNLOCKED -> cancel push."); }
     }
 
-    // Load Firebase Admin (for FCM v1) if the service-account key is present.
     static void InitFirebase()
     {
         try
@@ -170,8 +199,6 @@ static class Program
         catch (Exception ex) { Log("firebase init: " + ex.Message); }
     }
 
-    // Native full-screen path: send a data-only FCM message the app handles in the
-    // background/killed to raise the full-screen call. Returns true on success.
     static bool SendFcm(bool unlock, string nonce)
     {
         try
@@ -179,24 +206,17 @@ static class Program
             var data = unlock
                 ? new Dictionary<string, string> { { "type", "unlock" }, { "nonce", nonce }, { "machine", Environment.MachineName } }
                 : new Dictionary<string, string> { { "type", "cancel" } };
-            var msg = new Message
-            {
-                Token = _fcmToken,
-                Data = data,
-                Android = new AndroidConfig { Priority = Priority.High },
-            };
-            string id = FirebaseMessaging.DefaultInstance.SendAsync(msg).GetAwaiter().GetResult();
-            Log($"FCM sent ({id[^8..]}).");
+            var msg = new Message { Token = _fcmToken, Data = data, Android = new AndroidConfig { Priority = Priority.High } };
+            FirebaseMessaging.DefaultInstance.SendAsync(msg).GetAwaiter().GetResult();
+            Log($"FCM -> sent ({data["type"]})");
             return true;
         }
         catch (Exception ex) { Log("fcm: " + ex.Message); return false; }
     }
 
-    // Returns true on success. Prefers the native FCM path (full-screen) when the
-    // phone has registered an FCM token; otherwise falls back to Expo push.
     static bool SendPush(bool unlock, string nonce)
     {
-        if (_fcmToken.Length > 0 && _fcmReady) return SendFcm(unlock, nonce);
+        if (_fcmReady && _fcmToken.Length > 0) return SendFcm(unlock, nonce);
         if (_pushToken.Length == 0) { Log("No phone push token (pushtoken= in service.ini)."); return false; }
         object msg = unlock
             ? new {
@@ -254,7 +274,7 @@ static class Program
                 string pt = Field(body, "pushToken");
                 if (pt.Length > 0) { _pushToken = pt; SaveKV("pushtoken", pt); code = 200; reply = "REGISTERED"; Log($"Paired phone push token from {remote}."); }
             }
-            else if (req.HttpMethod == "POST" && path == "/registerfcm")   // native full-screen path (Step B)
+            else if (req.HttpMethod == "POST" && path == "/registerfcm")
             {
                 if (Field(body, "token") == _token)
                 {
@@ -263,21 +283,21 @@ static class Program
                     code = 200; reply = JsonSerializer.Serialize(new { fcm = _fcmReady });
                 }
             }
-            else if (req.HttpMethod == "POST" && path == "/info")   // auto-detect PC name + lock state
+            else if (req.HttpMethod == "POST" && path == "/info")   // auto-detect PC name + lock state + deviceId
             {
                 if (Field(body, "token") == _token)
-                { code = 200; reply = JsonSerializer.Serialize(new { machine = Environment.MachineName, user = DisplayUser(), locked = _locked, paired = Crypto.Ready }); }
+                { code = 200; reply = JsonSerializer.Serialize(new { deviceId = _deviceId, machine = Environment.MachineName, user = DisplayUser(), locked = _locked, paired = Crypto.Ready }); }
             }
-            else if (req.HttpMethod == "POST" && path == "/pair2")   // exchange ECDH public keys (Stage 2)
+            else if (req.HttpMethod == "POST" && path == "/pair2")
             {
                 if (Field(body, "token") == _token)
                 {
                     string pub = Field(body, "phonePub");
                     if (pub.Length > 0) { Crypto.SetPhonePub(pub); Log($"ECDH paired with phone from {remote}."); }
-                    code = 200; reply = JsonSerializer.Serialize(new { pcPub = Crypto.PublicKeyHex() });
+                    code = 200; reply = JsonSerializer.Serialize(new { deviceId = _deviceId, pcPub = Crypto.PublicKeyHex() });
                 }
             }
-            else if (req.HttpMethod == "POST" && path == "/challenge")   // card-tap: fresh nonce to approve against
+            else if (req.HttpMethod == "POST" && path == "/challenge")
             {
                 if (Field(body, "token") == _token)
                 {
@@ -288,9 +308,9 @@ static class Program
             }
             else if (req.HttpMethod == "POST" && path == "/approve")
             {
-                string tok = Field(body, "token"), nonce = Field(body, "nonce");
+                string tok = Field(body, "token"), nonce = Field(body, "nonce"), reqId = Field(body, "requestId");
                 bool ok; lock (Gate) ok = tok == _token && (nonce.Length > 0 && nonce == _pendingNonce || _locked || nonce.Length == 0);
-                if (ok)
+                if (ok && RelayClient.IsNewRequest(reqId))
                 {
                     WakeDisplay();
                     string iv = Field(body, "iv"), ct = Field(body, "ct");
@@ -305,16 +325,17 @@ static class Program
                     lock (Gate) _pendingNonce = null;
                     code = 200; reply = "OK";
                 }
-                else Log($"approve DENIED from {remote} (token mismatch).");
+                else Log($"approve DENIED from {remote} (token mismatch or duplicate request).");
             }
             else if (req.HttpMethod == "POST" && path == "/deny")
             {
                 lock (Gate) _pendingNonce = null;
                 code = 200; reply = "OK"; Log($"User DENIED from {remote}.");
             }
-            else if (req.HttpMethod == "POST" && path == "/unlock")   // manual / card-tap / quick tile (token only)
+            else if (req.HttpMethod == "POST" && path == "/unlock")
             {
-                if (Field(body, "token") == _token || req.Headers["X-Token"] == _token)
+                string reqId = Field(body, "requestId");
+                if ((Field(body, "token") == _token || req.Headers["X-Token"] == _token) && RelayClient.IsNewRequest(reqId))
                 {
                     WakeDisplay();
                     File.WriteAllText(FlagPath, "unlock");
@@ -337,9 +358,6 @@ static class Program
         catch { return ""; }
     }
 
-    // Display name for /info: the interactive console user. Empty at the cold-boot
-    // logon screen (no one logged in yet); in console/dev mode fall back to the
-    // process user so the card still shows a name.
     static string DisplayUser()
     {
         string u = CurrentConsoleUser();
@@ -357,6 +375,13 @@ static class Program
             else if (l.StartsWith("fcmtoken="))  _fcmToken = l[9..].Trim();
             else if (l.StartsWith("token="))     _token = l[6..].Trim();
             else if (l.StartsWith("pushtoken=")) _pushToken = l[10..].Trim();
+            else if (l.StartsWith("deviceid="))  _deviceId = l[9..].Trim();
+            else if (l.StartsWith("relayurl="))  _relayUrl = l[9..].Trim();
+        }
+        if (string.IsNullOrEmpty(_deviceId))
+        {
+            _deviceId = "FU-LAPTOP-" + Guid.NewGuid().ToString("N")[..12].ToUpper();
+            SaveKV("deviceid", _deviceId);
         }
     }
 
@@ -388,7 +413,133 @@ static class Program
         catch { /* logging must never throw */ }
     }
 
-    // ---- WTS: who is logged into the physical console session ----------------
+    // ---- Self-Hosted Relay WebSocket Client -----------------------------------
+    sealed class RelayClient
+    {
+        private static readonly HashSet<string> _processedReqs = new();
+        private static readonly object _reqLock = new();
+
+        public static bool IsNewRequest(string reqId)
+        {
+            if (string.IsNullOrEmpty(reqId)) return true;
+            lock (_reqLock)
+            {
+                if (_processedReqs.Contains(reqId)) return false;
+                _processedReqs.Add(reqId);
+                if (_processedReqs.Count > 300) _processedReqs.Clear();
+                return true;
+            }
+        }
+
+        public static void Start()
+        {
+            Task.Run(async () =>
+            {
+                var cts = new CancellationTokenSource();
+                while (!cts.IsCancellationRequested)
+                {
+                    try
+                    {
+                        using var ws = new ClientWebSocket();
+                        var uri = new Uri(_relayUrl.Replace("http://", "ws://").Replace("https://", "wss://") + "/laptop");
+                        Log($"[Relay] Connecting to {uri}...");
+                        await ws.ConnectAsync(uri, cts.Token);
+                        Log($"[Relay] Connected for device {_deviceId}.");
+
+                        // Send Registration
+                        var regMsg = JsonSerializer.Serialize(new
+                        {
+                            type = "register",
+                            deviceId = _deviceId,
+                            token = _token,
+                            machine = Environment.MachineName
+                        });
+                        var regBytes = Encoding.UTF8.GetBytes(regMsg);
+                        await ws.SendAsync(new ArraySegment<byte>(regBytes), WebSocketMessageType.Text, true, cts.Token);
+
+                        // Start Ping Heartbeat loop in background
+                        _ = Task.Run(async () =>
+                        {
+                            while (ws.State == WebSocketState.Open && !cts.IsCancellationRequested)
+                            {
+                                try
+                                {
+                                    await Task.Delay(15000, cts.Token);
+                                    if (ws.State == WebSocketState.Open)
+                                    {
+                                        var pingMsg = JsonSerializer.Serialize(new { type = "ping" });
+                                        var pingBytes = Encoding.UTF8.GetBytes(pingMsg);
+                                        await ws.SendAsync(new ArraySegment<byte>(pingBytes), WebSocketMessageType.Text, true, cts.Token);
+                                    }
+                                }
+                                catch {}
+                            }
+                        });
+
+                        // Receive loop
+                        var buffer = new byte[8192];
+                        while (ws.State == WebSocketState.Open && !cts.IsCancellationRequested)
+                        {
+                            var result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), cts.Token);
+                            if (result.MessageType == WebSocketMessageType.Close) break;
+
+                            var text = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                            using var doc = JsonDocument.Parse(text);
+                            var root = doc.RootElement;
+                            string msgType = root.TryGetProperty("type", out var t) ? (t.GetString() ?? "") : "";
+
+                            if (msgType == "unlock")
+                            {
+                                string reqTok = root.TryGetProperty("token", out var tk) ? (tk.GetString() ?? "") : "";
+                                string reqId = root.TryGetProperty("requestId", out var rId) ? (rId.GetString() ?? "") : "";
+
+                                if (reqTok == _token || string.IsNullOrEmpty(_token))
+                                {
+                                    if (IsNewRequest(reqId))
+                                    {
+                                        Log($"[Relay] Remote unlock trigger (req: {reqId[..Math.Min(8, reqId.Length)]}).");
+                                        WakeDisplay();
+                                        File.WriteAllText(FlagPath, "unlock");
+                                    }
+
+                                    // Send ACK back to relay
+                                    var ackMsg = JsonSerializer.Serialize(new { type = "ack", requestId = reqId, deviceId = _deviceId });
+                                    var ackBytes = Encoding.UTF8.GetBytes(ackMsg);
+                                    await ws.SendAsync(new ArraySegment<byte>(ackBytes), WebSocketMessageType.Text, true, cts.Token);
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"[Relay] Client connection error: {ex.Message}");
+                    }
+
+                    await Task.Delay(3000);
+                }
+            });
+        }
+    }
+
+    [DllImport("user32.dll")]
+    static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+    [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    static extern uint SetThreadExecutionState(uint esFlags);
+    const uint ES_CONTINUOUS = 0x80000000;
+    const uint ES_DISPLAY_REQUIRED = 0x00000002;
+    const uint KEYEVENTF_KEYUP = 0x0002;
+
+    static void WakeDisplay()
+    {
+        try
+        {
+            SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED);
+            keybd_event(0x10, 0, 0, UIntPtr.Zero);
+            keybd_event(0x10, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+        }
+        catch {}
+    }
+
     enum WTS_INFO_CLASS { WTSUserName = 5 }
 
     [DllImport("kernel32.dll")]
