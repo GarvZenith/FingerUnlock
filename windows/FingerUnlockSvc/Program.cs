@@ -73,7 +73,67 @@ static class Program
             relayUrl = _relayUrl,
             pcPub = Crypto.PublicKeyHex()
         };
-        Console.WriteLine(JsonSerializer.Serialize(pairData));
+        string json = JsonSerializer.Serialize(pairData);
+        Console.WriteLine(json);
+
+        try
+        {
+            Directory.CreateDirectory(Dir);
+            string htmlPath = Path.Combine(Dir, "pair.html");
+            string htmlContent = $@"<!DOCTYPE html>
+<html>
+<head>
+    <meta charset=""utf-8"">
+    <title>FingerUnlock — Pair Laptop</title>
+    <style>
+        body {{ background: #0f1220; color: #fff; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }}
+        .card {{ background: #1b2030; border-radius: 20px; padding: 32px; text-align: center; max-width: 440px; width: 100%; box-shadow: 0 10px 30px rgba(0,0,0,0.5); border: 1px solid #2a334c; }}
+        h1 {{ margin: 0 0 8px 0; font-size: 24px; color: #37d67a; }}
+        p {{ color: #889; font-size: 14px; margin: 0 0 24px 0; }}
+        #qrcode {{ background: #fff; padding: 16px; border-radius: 16px; display: inline-block; margin-bottom: 24px; }}
+        .info {{ background: #0f1220; border-radius: 12px; padding: 14px; text-align: left; font-size: 13px; color: #aab; font-family: monospace; line-height: 1.6; word-break: break-all; }}
+        .badge {{ display: inline-block; background: #3b6ef5; color: #fff; padding: 4px 10px; border-radius: 12px; font-weight: bold; font-size: 12px; margin-bottom: 12px; }}
+    </style>
+    <script src=""https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js""></script>
+</head>
+<body>
+    <div class=""card"">
+        <div class=""badge"">ONE-TIME PAIRING</div>
+        <h1>Scan with FingerUnlock App</h1>
+        <p>Open FingerUnlock on your phone, tap <b>📷 Scan Laptop QR</b>, and point camera at this screen.</p>
+        <div id=""qrcode""></div>
+        <div class=""info"">
+            <div><b>Device:</b> {Environment.MachineName}</div>
+            <div><b>Device ID:</b> {_deviceId}</div>
+            <div><b>Local IP:</b> {GetLocalIpAddress()}:{_port}</div>
+            <div><b>Relay URL:</b> {_relayUrl}</div>
+        </div>
+    </div>
+    <script>
+        const data = {json};
+        new QRCode(document.getElementById(""qrcode""), {{
+            text: JSON.stringify(data),
+            width: 250,
+            height: 250,
+            colorDark : ""#000000"",
+            colorLight : ""#ffffff"",
+            correctLevel : QRCode.CorrectLevel.M
+        }});
+    </script>
+</body>
+</html>";
+            File.WriteAllText(htmlPath, htmlContent);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = htmlPath,
+                UseShellExecute = true
+            });
+            Console.WriteLine($"[QR Visual] Opened {htmlPath} in default browser.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[QR Visual Error] {ex.Message}");
+        }
     }
 
     static string GetLocalIpAddress()

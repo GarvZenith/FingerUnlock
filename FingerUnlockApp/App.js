@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, Component } from 'react';
 import {
   Text, View, TextInput, TouchableOpacity, StyleSheet, ScrollView, Platform, Linking, Alert, BackHandler, ToastAndroid,
-  Vibration, Animated, Easing,
+  Vibration, Animated, Easing, Modal,
 } from 'react-native';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as Notifications from 'expo-notifications';
 import * as Updates from 'expo-updates';
@@ -162,6 +163,9 @@ function App() {
   const [tick, setTick] = useState(0);              // drives periodic online re-poll
   const [incoming, setIncoming] = useState(null);   // {machine, nonce} while the call-style screen rings
   const [qrInput, setQrInput] = useState('');       // QR JSON paste string
+  const [showAdvanced, setShowAdvanced] = useState(false);  // Collapsible drawer toggle
+  const [permission, requestPermission] = useCameraPermissions();
+  const [scanning, setScanning] = useState(false);
   const ring = useRef(new Animated.Value(0)).current;
   const fcmRef = useRef('');                          // FCM device token (native full-screen path)
 
@@ -449,10 +453,57 @@ function App() {
   }, [tick, laptops.length]);
 
   // ---- edit screen helpers ----
+  async function startQrScan() {
+    if (!permission?.granted) {
+      const res = await requestPermission();
+      if (!res.granted) {
+        Alert.alert('Camera Permission Required', 'FingerUnlock requires camera permission to scan your laptop QR code.');
+        return;
+      }
+    }
+    setScanning(true);
+  }
+
+  function handleBarCodeScanned({ data }) {
+    if (!data) return;
+    try {
+      const parsed = JSON.parse(data.trim());
+      if (!parsed.deviceId && !parsed.ip) {
+        throw new Error('Invalid pairing QR data format');
+      }
+      const newLap = {
+        id: orig?.id || String(Date.now()),
+        deviceId: parsed.deviceId || draft?.deviceId || '',
+        name: parsed.name || draft?.name || 'Laptop',
+        ip: parsed.ip || draft?.ip || '',
+        tailscaleIp: parsed.tailscaleIp || draft?.tailscaleIp || '',
+        relayUrl: parsed.relayUrl || draft?.relayUrl || DEFAULT_RELAY_URL,
+        token: parsed.token || draft?.token || '',
+        pw: draft?.pw || '',
+        pcPub: parsed.pcPub || draft?.pcPub || ''
+      };
+      setScanning(false);
+      (async () => {
+        const list = await loadLaptops();
+        const idx = list.findIndex((l) => (l.deviceId && l.deviceId === newLap.deviceId) || l.id === newLap.id);
+        if (idx >= 0) list[idx] = newLap; else list.push(newLap);
+        await saveLaptops(list);
+        await refresh();
+        registerFcmAll(list);
+        ToastAndroid.show(`Paired successfully with ${newLap.name}!`, ToastAndroid.LONG);
+        leaveEdit();
+      })();
+    } catch (e) {
+      setScanning(false);
+      Alert.alert('Invalid QR Code', 'The scanned QR code is not a valid FingerUnlock laptop pairing code.');
+    }
+  }
+
   function openEdit(lap) {
     setOrig(lap);
     setDraft(lap ? { ...lap } : { id: String(Date.now()), deviceId: '', name: '', ip: '', tailscaleIp: '', relayUrl: DEFAULT_RELAY_URL, token: '', pw: '' });
     setQrInput('');
+    setShowAdvanced(false);
     setScreen('edit');
   }
   function leaveEdit() { setDraft(null); setOrig(null); setScreen(laptops.length === 0 ? 'settings' : 'home'); }
@@ -590,45 +641,71 @@ function App() {
       <ScrollView contentContainerStyle={styles.c}>
         <Text style={styles.h}>{orig?.name || orig?.machine ? 'Edit laptop' : 'Add laptop'}</Text>
 
-        <Text style={styles.label}>📷 1-Time QR Pairing (Paste QR Data)</Text>
-        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
-          <TextInput style={[styles.input, { flex: 1, marginRight: 8 }]} value={qrInput} onChangeText={setQrInput}
-            autoCapitalize="none" placeholder='Paste QR JSON string' placeholderTextColor="#889" />
-          <TouchableOpacity style={[styles.btnAlt, { marginTop: 0, paddingHorizontal: 12 }]} onPress={handleImportQr}>
-            <Text style={styles.btnAltText}>Pair QR</Text>
+        {/* PRIMARY HERO QR PAIRING CARD */}
+        <View style={styles.qrHeroCard}>
+          <Text style={styles.qrHeroTitle}>📷 Scan Laptop Screen QR</Text>
+          <Text style={styles.qrHeroSub}>
+            Run FingerUnlock on your Windows laptop with --pair-qr, then scan the laptop screen below to pair automatically.
+          </Text>
+          <TouchableOpacity style={styles.btnHeroScan} onPress={startQrScan} activeOpacity={0.85}>
+            <Text style={styles.btnHeroScanTxt}>📷 Scan Laptop QR Code</Text>
           </TouchableOpacity>
         </View>
 
-        <Text style={styles.label}>Name (optional)</Text>
-        <TextInput style={styles.input} value={draft.name} onChangeText={(v) => setDraft({ ...draft, name: v })} placeholder="My laptop" placeholderTextColor="#889" />
+        {/* COLLAPSIBLE ADVANCED / MANUAL SETUP DRAWER */}
+        <TouchableOpacity
+          style={styles.advancedDrawerHeader}
+          onPress={() => setShowAdvanced(!showAdvanced)}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.advancedDrawerTitle}>⚙ Advanced / Manual Setup</Text>
+          <Text style={styles.advancedDrawerChevron}>{showAdvanced ? '▲ Collapse' : '▼ Expand'}</Text>
+        </TouchableOpacity>
 
-        <Text style={styles.label}>Device ID (Stable Identity)</Text>
-        <TextInput style={styles.input} value={draft.deviceId || ''} onChangeText={(v) => setDraft({ ...draft, deviceId: v })}
-          autoCapitalize="none" placeholder="FU-LAPTOP-XXXXXX" placeholderTextColor="#889" />
+        {showAdvanced && (
+          <View style={styles.advancedDrawerContent}>
+            <Text style={styles.label}>Paste QR Data (Manual Fallback)</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
+              <TextInput style={[styles.input, { flex: 1, marginRight: 8 }]} value={qrInput} onChangeText={setQrInput}
+                autoCapitalize="none" placeholder='Paste QR JSON string' placeholderTextColor="#889" />
+              <TouchableOpacity style={[styles.btnAlt, { marginTop: 0, paddingHorizontal: 12 }]} onPress={handleImportQr}>
+                <Text style={styles.btnAltText}>Pair JSON</Text>
+              </TouchableOpacity>
+            </View>
 
-        <Text style={styles.label}>Laptop Local IP</Text>
-        <TextInput style={styles.input} value={draft.ip} onChangeText={(v) => setDraft({ ...draft, ip: v })}
-          autoCapitalize="none" keyboardType="numbers-and-punctuation" placeholder="192.168.x.x or Hotspot IP" placeholderTextColor="#889" />
+            <Text style={styles.label}>Name (optional)</Text>
+            <TextInput style={styles.input} value={draft.name} onChangeText={(v) => setDraft({ ...draft, name: v })} placeholder="My laptop" placeholderTextColor="#889" />
 
-        <Text style={styles.label}>Self-Hosted Relay Server URL</Text>
-        <TextInput style={styles.input} value={draft.relayUrl || DEFAULT_RELAY_URL} onChangeText={(v) => setDraft({ ...draft, relayUrl: v })}
-          autoCapitalize="none" placeholder="http://relay.yourdomain.com:5590" placeholderTextColor="#889" />
+            <Text style={styles.label}>Device ID (Stable Identity)</Text>
+            <TextInput style={styles.input} value={draft.deviceId || ''} onChangeText={(v) => setDraft({ ...draft, deviceId: v })}
+              autoCapitalize="none" placeholder="FU-LAPTOP-XXXXXX" placeholderTextColor="#889" />
 
-        <Text style={styles.label}>Token</Text>
-        <TextInput style={styles.input} value={draft.token} onChangeText={(v) => setDraft({ ...draft, token: v })}
-          autoCapitalize="none" secureTextEntry placeholder="same as service.ini" placeholderTextColor="#889" />
+            <Text style={styles.label}>Laptop Local IP</Text>
+            <TextInput style={styles.input} value={draft.ip} onChangeText={(v) => setDraft({ ...draft, ip: v })}
+              autoCapitalize="none" keyboardType="numbers-and-punctuation" placeholder="192.168.x.x or Hotspot IP" placeholderTextColor="#889" />
 
-        <Text style={styles.label}>Windows password (stored only on this phone)</Text>
-        <TextInput style={styles.input} value={draft.pw || ''} onChangeText={(v) => setDraft({ ...draft, pw: v })}
-          autoCapitalize="none" secureTextEntry placeholder="for hardened / cold-boot login" placeholderTextColor="#889" />
+            <Text style={styles.label}>Self-Hosted Relay Server URL</Text>
+            <TextInput style={styles.input} value={draft.relayUrl || DEFAULT_RELAY_URL} onChangeText={(v) => setDraft({ ...draft, relayUrl: v })}
+              autoCapitalize="none" placeholder="http://relay.yourdomain.com:5590" placeholderTextColor="#889" />
 
-        {draft.machine ? <Text style={styles.detected}>Detected: {draft.machine}</Text> : null}
-        {draft.pcPub ? <Text style={styles.detected}>🔒 Encryption paired</Text> : null}
+            <Text style={styles.label}>Token</Text>
+            <TextInput style={styles.input} value={draft.token} onChangeText={(v) => setDraft({ ...draft, token: v })}
+              autoCapitalize="none" secureTextEntry placeholder="same as service.ini" placeholderTextColor="#889" />
 
-        <TouchableOpacity style={styles.btnAlt} onPress={detect}><Text style={styles.btnAltText}>Detect PC name</Text></TouchableOpacity>
-        <TouchableOpacity style={styles.btnAlt} onPress={pairDraft}><Text style={styles.btnAltText}>Pair this phone</Text></TouchableOpacity>
+            <Text style={styles.label}>Windows password (stored only on this phone)</Text>
+            <TextInput style={styles.input} value={draft.pw || ''} onChangeText={(v) => setDraft({ ...draft, pw: v })}
+              autoCapitalize="none" secureTextEntry placeholder="for hardened / cold-boot login" placeholderTextColor="#889" />
 
-        <TouchableOpacity style={styles.btn} onPress={commitDraft}><Text style={styles.btnText}>Save changes</Text></TouchableOpacity>
+            {draft.machine ? <Text style={styles.detected}>Detected: {draft.machine}</Text> : null}
+            {draft.pcPub ? <Text style={styles.detected}>🔒 Encryption paired</Text> : null}
+
+            <TouchableOpacity style={styles.btnAlt} onPress={detect}><Text style={styles.btnAltText}>Detect PC name</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.btnAlt} onPress={pairDraft}><Text style={styles.btnAltText}>Pair this phone</Text></TouchableOpacity>
+
+            <TouchableOpacity style={styles.btn} onPress={commitDraft}><Text style={styles.btnText}>Save manual changes</Text></TouchableOpacity>
+          </View>
+        )}
+
         <TouchableOpacity style={styles.btnGhost} onPress={leaveEdit}><Text style={styles.btnGhostText}>Back</Text></TouchableOpacity>
       </ScrollView>
     );
@@ -660,30 +737,54 @@ function App() {
 
   // HOME
   return (
-    <ScrollView contentContainerStyle={styles.c}>
-      <View style={styles.topbar}>
-        <Text style={styles.title}>🔓 FingerUnlock</Text>
-        <TouchableOpacity onPress={() => setScreen('settings')}><Text style={styles.gear}>⚙</Text></TouchableOpacity>
-      </View>
+    <View style={{ flex: 1, backgroundColor: '#0f1220' }}>
+      <ScrollView contentContainerStyle={styles.c}>
+        <View style={styles.topbar}>
+          <Text style={styles.title}>🔓 FingerUnlock</Text>
+          <TouchableOpacity onPress={() => setScreen('settings')}><Text style={styles.gear}>⚙</Text></TouchableOpacity>
+        </View>
 
-      {laptops.length === 0 ? (
-        <TouchableOpacity style={styles.btn} onPress={() => setScreen('settings')}>
-          <Text style={styles.btnText}>+ Add your first laptop</Text>
-        </TouchableOpacity>
-      ) : laptops.map((l) => {
-        const st = status[l.id] || {};
-        return (
-          <TouchableOpacity key={l.id} style={styles.card} onPress={() => unlockNow(l)}>
-            <View style={[styles.dot, { backgroundColor: st.online ? '#37d67a' : '#666' }]} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.cardName}>{l.name || st.machine || l.machine || l.ip || l.deviceId}</Text>
-              <Text style={styles.dim}>{st.machine || l.machine || ''}{st.user ? ` · ${st.user}` : ''}</Text>
-              <Text style={styles.dim}>{st.online ? 'connected · tap to unlock' : 'offline'}</Text>
-            </View>
+        {laptops.length === 0 ? (
+          <TouchableOpacity style={styles.btn} onPress={() => openEdit(null)}>
+            <Text style={styles.btnText}>+ Add your first laptop</Text>
           </TouchableOpacity>
-        );
-      })}
-    </ScrollView>
+        ) : laptops.map((l) => {
+          const st = status[l.id] || {};
+          return (
+            <TouchableOpacity key={l.id} style={styles.card} onPress={() => unlockNow(l)}>
+              <View style={[styles.dot, { backgroundColor: st.online ? '#37d67a' : '#666' }]} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.cardName}>{l.name || st.machine || l.machine || l.ip || l.deviceId}</Text>
+                <Text style={styles.dim}>{st.machine || l.machine || ''}{st.user ? ` · ${st.user}` : ''}</Text>
+                <Text style={styles.dim}>{st.online ? 'connected · tap to unlock' : 'offline'}</Text>
+              </View>
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
+
+      {/* FULL SCREEN CAMERA PAIRING SCANNER MODAL */}
+      <Modal visible={scanning} animationType="slide" onRequestClose={() => setScanning(false)}>
+        <View style={{ flex: 1, backgroundColor: '#000' }}>
+          <CameraView
+            style={StyleSheet.absoluteFillObject}
+            facing="back"
+            onBarcodeScanned={handleBarCodeScanned}
+            barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+          />
+          <View style={styles.scannerOverlay}>
+            <View style={styles.scannerHeader}>
+              <Text style={styles.scannerTitle}>Scan Laptop Pairing QR</Text>
+              <TouchableOpacity onPress={() => setScanning(false)} style={styles.scannerCloseBtn}>
+                <Text style={styles.scannerCloseTxt}>✕ Close</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.scannerTargetBox} />
+            <Text style={styles.scannerHint}>Align laptop screen QR code inside the frame</Text>
+          </View>
+        </View>
+      </Modal>
+    </View>
   );
 }
 
@@ -726,6 +827,22 @@ const styles = StyleSheet.create({
   ringBtnIcon: { color: '#fff', fontSize: 30, fontWeight: '700' },
   ringLabels: { flexDirection: 'row', justifyContent: 'space-around', marginTop: 10 },
   ringLbl: { color: '#aab', fontSize: 13 },
+  qrHeroCard: { backgroundColor: '#1b2030', borderRadius: 16, padding: 20, marginBottom: 20, borderWidth: 1, borderColor: '#3b6ef5' },
+  qrHeroTitle: { color: '#37d67a', fontSize: 18, fontWeight: '700', marginBottom: 6 },
+  qrHeroSub: { color: '#aab', fontSize: 13, lineHeight: 18, marginBottom: 16 },
+  btnHeroScan: { backgroundColor: '#3b6ef5', borderRadius: 12, paddingVertical: 14, alignItems: 'center', shadowColor: '#3b6ef5', shadowOpacity: 0.4, shadowRadius: 8, elevation: 4 },
+  btnHeroScanTxt: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  advancedDrawerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#181d2c', borderRadius: 10, padding: 14, marginBottom: 12 },
+  advancedDrawerTitle: { color: '#9ab6ff', fontSize: 15, fontWeight: '600' },
+  advancedDrawerChevron: { color: '#889', fontSize: 13, fontWeight: '600' },
+  advancedDrawerContent: { backgroundColor: '#141824', borderRadius: 12, padding: 14, marginBottom: 16 },
+  scannerOverlay: { flex: 1, justifyContent: 'space-between', alignItems: 'center', paddingVertical: 50, paddingHorizontal: 20, backgroundColor: 'rgba(0,0,0,0.5)' },
+  scannerHeader: { width: '100%', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  scannerTitle: { color: '#fff', fontSize: 18, fontWeight: '700' },
+  scannerCloseBtn: { backgroundColor: 'rgba(255,255,255,0.2)', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20 },
+  scannerCloseTxt: { color: '#fff', fontSize: 14, fontWeight: '600' },
+  scannerTargetBox: { width: 260, height: 260, borderWidth: 3, borderColor: '#37d67a', borderRadius: 24, backgroundColor: 'transparent' },
+  scannerHint: { color: '#fff', fontSize: 14, fontWeight: '600', backgroundColor: 'rgba(0,0,0,0.7)', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 12 },
 });
 
 export default App;

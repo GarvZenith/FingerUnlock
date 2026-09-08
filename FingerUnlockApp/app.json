@@ -24,7 +24,8 @@
         "WAKE_LOCK",
         "DISABLE_KEYGUARD",
         "VIBRATE",
-        "FOREGROUND_SERVICE"
+        "FOREGROUND_SERVICE",
+        "CAMERA"
       ]
     },
     "ios": {
@@ -36,6 +37,12 @@
       "@react-native-firebase/app",
       "./plugins/withLockScreen",
       "./plugins/withQuickSettingsTile",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow FingerUnlock to use your camera to scan laptop pairing QR codes."
+        }
+      ],
       [
         "expo-build-properties",
         {
